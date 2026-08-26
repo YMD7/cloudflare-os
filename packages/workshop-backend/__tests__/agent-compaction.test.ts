@@ -105,6 +105,13 @@ describe("compaction trigger", () => {
     expect(getModelTokenLimits({
       provider: "anthropic", model: "claude-opus-5", apiToken: "",
     })).toEqual({inputBudget: 1_000_000, maxOutputTokens: undefined});
+
+    // OpenAI rate limits reserve the requested response cap. The gateway-facing catalog keeps
+    // that cap below the provider maximum so one turn does not reserve 128K wholesale tokens.
+    for (let model of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+      expect(getModelTokenLimits({provider: "openai", model, apiToken: ""}))
+          .toEqual({inputBudget: 1_017_232, maxOutputTokens: 32_768});
+    }
   });
 
   // Workers AI rejects a request whose prompt and response cap together exceed the window, so a

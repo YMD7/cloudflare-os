@@ -1177,6 +1177,10 @@ export type AiModelConfig = {
  */
 export const WORKERS_AI_OUTPUT_LIMIT = 32768;
 
+// OpenAI counts the requested response cap against token rate limits. Keep interactive agent
+// turns below the model maximum so a single request does not reserve 128K wholesale tokens.
+const OPENAI_OUTPUT_LIMIT = 32768;
+
 /**
  * Models offered in the picker. `contextWindow` is the maximum tokens one request may total.
  * `outputLimit`, when present, is both the requested response cap and the space reserved for it,
@@ -1206,9 +1210,12 @@ export const SUGGESTED_MODELS: Record<
     "claude-haiku-4-5": {name: "Claude Haiku 4.5", contextWindow: 200000},
   },
   "openai": {
-    "gpt-5.6-sol": {name: "GPT 5.6 Sol", contextWindow: 1050000, outputLimit: 128000},
-    "gpt-5.6-luna": {name: "GPT 5.6 Luna", contextWindow: 1050000, outputLimit: 128000},
-    "gpt-5.6-terra": {name: "GPT 5.6 Terra", contextWindow: 1050000, outputLimit: 128000},
+    "gpt-5.6-sol": {name: "GPT 5.6 Sol", contextWindow: 1050000,
+      outputLimit: OPENAI_OUTPUT_LIMIT},
+    "gpt-5.6-luna": {name: "GPT 5.6 Luna", contextWindow: 1050000,
+      outputLimit: OPENAI_OUTPUT_LIMIT},
+    "gpt-5.6-terra": {name: "GPT 5.6 Terra", contextWindow: 1050000,
+      outputLimit: OPENAI_OUTPUT_LIMIT},
   },
   "google": {
     "gemini-3.6-flash": {name: "Gemini 3.6 Flash", contextWindow: 1048576},
