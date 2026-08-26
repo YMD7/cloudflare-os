@@ -1809,6 +1809,9 @@ type SuggestedModel = {
 // The literal is kept apart from the export so SuggestedModelId can derive the model ids from it.
 const SUGGESTED_MODEL_CATALOG = {
   "cloudflare": {
+    "moonshotai/kimi-k3": {
+      name: "Kimi K3 (Cloudflare AI catalog)", contextWindow: 1048576, outputLimit: 131072,
+    },
     "@cf/moonshotai/kimi-k2.7-code": {
       name: "Kimi K2.7 Code (Workers AI)", contextWindow: 262144,
       outputLimit: WORKERS_AI_OUTPUT_LIMIT,

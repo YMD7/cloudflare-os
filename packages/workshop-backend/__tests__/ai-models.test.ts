@@ -41,6 +41,12 @@ const WORKERS_AI_CONFIG: AiModelConfig = {
   apiToken: "ignored-in-gateway-mode",
 };
 
+const KIMI_K3_CONFIG: AiModelConfig = {
+  provider: "cloudflare",
+  model: "moonshotai/kimi-k3",
+  apiToken: "ignored-in-gateway-mode",
+};
+
 function env(overrides: Partial<Cloudflare.Env> = {}): Cloudflare.Env {
   return {
     CF_AI_GATEWAY: "platform-gateway",
@@ -199,6 +205,12 @@ describe("getModel AI Gateway routing", () => {
     });
   }, 15000);
 
+  it("rejects Kimi K3 on a connected user's cross-account Gateway", () => {
+    expect(() => getModel(env(), KIMI_K3_CONFIG, INITIATOR, {
+      userGateway: { accountId: "user-account-id", apiKey: "user-token" },
+    })).toThrow("Kimi K3 requires the deployment's same-account Workers AI binding.");
+  });
+
   it("speaks the provider's native API on a connected user's Gateway", async () => {
     const handle = getModel(env(), ANTHROPIC_CONFIG, INITIATOR, {
       userGateway: { accountId: "user-account-id", apiKey: "user-token" },
@@ -268,8 +280,18 @@ describe("getModel AI Gateway binding transport", () => {
     body: string;
   };
   const capturedEntries: CapturedBindingRequest[] = [];
+  type CapturedCatalogRun = {
+    model: string;
+    inputs: Record<string, unknown>;
+    options: {
+      gateway?: { id: string; metadata?: Record<string, unknown> };
+      returnRawResponse?: boolean;
+    };
+  };
+  const capturedCatalogRuns: CapturedCatalogRun[] = [];
 
   const fakeBinding = {
+    aiGatewayLogId: "k3-log-id",
     fetch: async (input: Request | string | URL, init?: RequestInit) => {
       const request = input instanceof Request ? input : new Request(input, init);
       capturedEntries.push({
@@ -282,6 +304,25 @@ describe("getModel AI Gateway binding transport", () => {
       // message and the request stays captured for assertions.
       return Response.json(
           { error: { type: "bad_request", message: "stubbed" } }, { status: 400 });
+    },
+    run: async (model: string, inputs: Record<string, unknown>,
+                options: CapturedCatalogRun["options"]) => {
+      capturedCatalogRuns.push({ model, inputs, options });
+      const chunks = [
+        "data: {\"id\":\"stub\",\"object\":\"chat.completion.chunk\",\"created\":0," +
+            "\"model\":\"moonshotai/kimi-k3\",\"choices\":[{\"index\":0," +
+            "\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"}," +
+            "\"finish_reason\":null}]}",
+        "data: {\"id\":\"stub\",\"object\":\"chat.completion.chunk\",\"created\":0," +
+            "\"model\":\"moonshotai/kimi-k3\",\"choices\":[{\"index\":0," +
+            "\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{" +
+            "\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}",
+        "data: [DONE]",
+        "",
+      ];
+      return new Response(chunks.join("\n\n"), {
+        headers: { "content-type": "text/event-stream" },
+      });
     },
   } as unknown as Ai;
 
@@ -309,6 +350,7 @@ describe("getModel AI Gateway binding transport", () => {
 
   beforeEach(() => {
     capturedEntries.length = 0;
+    capturedCatalogRuns.length = 0;
     capturedRequests.length = 0;
   });
 
@@ -365,6 +407,52 @@ describe("getModel AI Gateway binding transport", () => {
     expect(headerNames).not.toContain("authorization");
     expect(headerNames).not.toContain("x-api-key");
   }, 15000);
+
+  it("drives Kimi K3 through AI.run with Gateway attribution", async () => {
+    const handle = getModel(bindingEnv(), KIMI_K3_CONFIG, INITIATOR, {
+      metadata: { source: "chat", gadgetId: "gadget-123", chatId: 7 },
+    });
+
+    expect(handle.model.id).toBe("moonshotai/kimi-k3");
+    expect(handle.model.provider).toBe("moonshotai");
+    expect(handle.model.contextWindow).toBe(1048576);
+    expect(handle.model.maxTokens).toBe(131072);
+    expect(handle.aiGatewayLogRoute).toEqual({ gateway: "platform-gateway" });
+
+    const stream = handle.stream(handle.model, {
+      messages: [{ role: "user", content: "hello", timestamp: 0 }],
+    }, { maxRetries: 0 });
+    const message = await stream.result();
+    expect(message.stopReason).toBe("stop");
+    expect(capturedEntries).toHaveLength(0);
+    expect(capturedCatalogRuns).toHaveLength(1);
+
+    const run = capturedCatalogRuns[0];
+    expect(run.model).toBe("moonshotai/kimi-k3");
+    expect(run.inputs.model).toBeUndefined();
+    expect(run.inputs.stream).toBe(true);
+    expect(run.inputs.messages).toEqual([
+      { role: "user", content: "hello" },
+    ]);
+    expect(run.options).toMatchObject({
+      gateway: {
+        id: "platform-gateway",
+        metadata: {
+          user: "user-123",
+          source: "chat",
+          gadgetId: "gadget-123",
+          chatId: 7,
+        },
+      },
+      returnRawResponse: true,
+    });
+    expect(handle.lastResponse).toEqual({ status: 200, aiGatewayLogId: "k3-log-id" });
+  }, 15000);
+
+  it("requires the binding transport for Kimi K3", () => {
+    expect(() => getModel(env({ WORKERS_AI: undefined }), KIMI_K3_CONFIG, INITIATOR))
+        .toThrow("Kimi K3 requires the same-account Workers AI binding transport.");
+  });
 
   it("lets a per-call fetch override the binding transport", async () => {
     // Tests and diagnostics inject options.fetch; it must win over the handle's binding fetch.
@@ -562,6 +650,24 @@ describe("getModel direct routing (no gateway)", () => {
     const request = await captureRequest(handle);
     expect(request.url).toBe(
         "https://api.cloudflare.com/client/v4/accounts/user-account-id/ai/v1/chat/completions");
+    expect(request.headers.get("authorization")).toBe("Bearer user-token");
+  }, 15000);
+
+  it("uses the account-scoped Cloudflare AI endpoint for direct Kimi K3", async () => {
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      ...KIMI_K3_CONFIG,
+      accountId: "user-account-id",
+      apiToken: "user-token",
+    }, INITIATOR);
+
+    expect(handle.model.provider).toBe("moonshotai");
+    expect(handle.model.baseUrl).toBe(
+        "https://api.cloudflare.com/client/v4/accounts/user-account-id/ai/v1");
+
+    const request = await captureRequest(handle);
+    expect(request.url).toBe(
+        "https://api.cloudflare.com/client/v4/accounts/user-account-id/ai/v1/chat/completions");
+    expect((JSON.parse(request.body) as { model: string }).model).toBe("moonshotai/kimi-k3");
     expect(request.headers.get("authorization")).toBe("Bearer user-token");
   }, 15000);
 
