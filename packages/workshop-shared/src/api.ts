@@ -1187,6 +1187,9 @@ export const SUGGESTED_MODELS: Record<
   Record<string, {name: string, contextWindow: number, outputLimit?: number}>
 > = {
   "cloudflare": {
+    "moonshotai/kimi-k3": {
+      name: "Kimi K3 (Cloudflare AI catalog)", contextWindow: 1048576, outputLimit: 131072,
+    },
     "@cf/moonshotai/kimi-k2.7-code": {
       name: "Kimi K2.7 Code (Workers AI)", contextWindow: 262144,
       outputLimit: WORKERS_AI_OUTPUT_LIMIT,

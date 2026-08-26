@@ -11,6 +11,7 @@ import { stream as openaiResponsesStream } from "@earendil-works/pi-ai/api/opena
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models";
 import { CLOUDFLARE_WORKERS_AI_MODELS } from "@earendil-works/pi-ai/providers/cloudflare-workers-ai.models";
 import { GOOGLE_MODELS } from "@earendil-works/pi-ai/providers/google.models";
+import { MOONSHOTAI_MODELS } from "@earendil-works/pi-ai/providers/moonshotai.models";
 import { OPENAI_MODELS } from "@earendil-works/pi-ai/providers/openai.models";
 import { ApprovalQueue, Gatekeeper, ResourceDescription, stripTrailingSlashes } from '@gadgets/workshop-shared/gatekeeper';
 import { LanguageModelBinding } from "./ai-model-binding";
@@ -124,6 +125,20 @@ const API_STREAMS: Record<string, StreamFunction<Api, SimpleStreamOptions>> = {
 };
 
 const ZERO_COST: ModelCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+const KIMI_K3_MODEL = "moonshotai/kimi-k3";
+
+declare global {
+  interface AiModels {
+    "moonshotai/kimi-k3": {
+      inputs: Record<string, unknown>;
+      postProcessedOutputs: Record<string, unknown>;
+    };
+  }
+}
+
+function isCloudflareCatalogModel(config: AiModelConfig): boolean {
+  return config.provider === "cloudflare" && config.model === KIMI_K3_MODEL;
+}
 
 // Consult pi's builtin catalog for cost/compat metadata of a known model id. Unknown models are
 // fine (synthesized with zero cost). Import per-provider, not providers/all.
@@ -132,7 +147,11 @@ function catalogModel(provider: AiModelConfig["provider"], modelId: string): Mod
     case "anthropic": return (ANTHROPIC_MODELS as Record<string, Model<Api>>)[modelId];
     case "openai": return (OPENAI_MODELS as Record<string, Model<Api>>)[modelId];
     case "google": return (GOOGLE_MODELS as Record<string, Model<Api>>)[modelId];
-    case "cloudflare": return (CLOUDFLARE_WORKERS_AI_MODELS as Record<string, Model<Api>>)[modelId];
+    case "cloudflare":
+      if (modelId === KIMI_K3_MODEL) {
+        return (MOONSHOTAI_MODELS as Record<string, Model<Api>>)["kimi-k3"];
+      }
+      return (CLOUDFLARE_WORKERS_AI_MODELS as Record<string, Model<Api>>)[modelId];
     case "ollama": return undefined;
     default: return undefined;
   }
@@ -161,6 +180,26 @@ function workersAiCompat(catalog: Model<Api> | undefined): OpenAICompletionsComp
     supportsLongCacheRetention: false,
     ...(catalog?.compat as OpenAICompletionsCompat | undefined),
     sendSessionAffinityHeaders: true,
+  };
+}
+
+function cloudflareChatModel(config: AiModelConfig, baseUrl: string): Model<Api> {
+  const catalog = catalogModel(config.provider, config.model);
+  const window = modelTokenWindow(config, catalog);
+  const isCatalogModel = isCloudflareCatalogModel(config);
+  return {
+    id: config.model,
+    name: catalog?.name ?? config.model,
+    api: "openai-completions",
+    provider: isCatalogModel ? (catalog?.provider ?? "cloudflare-ai-gateway")
+        : "cloudflare-workers-ai",
+    baseUrl,
+    reasoning: catalog?.reasoning ?? false,
+    input: catalog?.input ?? ["text"],
+    cost: catalog?.cost ?? ZERO_COST,
+    ...window,
+    thinkingLevelMap: catalog?.thinkingLevelMap,
+    compat: isCatalogModel ? catalog?.compat : workersAiCompat(catalog),
   };
 }
 
@@ -231,18 +270,7 @@ function gatewayNativeModel(config: AiModelConfig, gatewayUrl: string): Model<Ap
       // Workers AI's own OpenAI-compatible endpoint, exposed through the gateway's workers-ai
       // route. This is Workers AI's native chat API (the same surface as its direct
       // /accounts/{id}/ai/v1 REST endpoint), not the gateway's cross-provider /compat layer.
-      return {
-        id: config.model,
-        name: catalog?.name ?? config.model,
-        api: "openai-completions",
-        provider: "cloudflare-workers-ai",
-        baseUrl: `${gatewayUrl}/workers-ai/v1`,
-        reasoning: catalog?.reasoning ?? false,
-        input: catalog?.input ?? ["text"],
-        cost: catalog?.cost ?? ZERO_COST,
-        ...window,
-        compat: workersAiCompat(catalog),
-      };
+      return cloudflareChatModel(config, `${gatewayUrl}/workers-ai/v1`);
     default:
       return undefined;
   }
@@ -384,6 +412,10 @@ function getModelViaUserGateway(
   userGateway: UserGatewayRouting,
   sessionAffinity?: string,
 ): ModelHandle {
+  if (isCloudflareCatalogModel(config)) {
+    throw new Error(
+        "Kimi K3 requires the deployment's same-account Workers AI binding.");
+  }
   // Route through the user's AI Gateway data plane, speaking each provider's native API (see
   // gatewayNativeModel; unified *billing* has no API requirements). Auth is the connected user's
   // Cloudflare token via `cf-aig-authorization` (authorized by its `aig.run` scope); the
@@ -437,6 +469,38 @@ function bindingFetch(binding: Ai): FetchFunction {
   return (input, init) => (binding as unknown as AiFetchBinding).fetch(input, init);
 }
 
+// Third-party Cloudflare AI catalog models use AI.run(), not the Workers AI gateway route.
+// pi still builds the OpenAI-compatible payload and consumes the raw streaming Response.
+function kimiK3BindingFetch(binding: Ai, gateway: string,
+                            metadata: GatewayMetadata): FetchFunction {
+  return async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    if (request.method !== "POST") {
+      return Response.json({ error: { message: "Kimi K3 requires a POST request." } },
+          { status: 405 });
+    }
+
+    const payload = await request.json() as Record<string, unknown>;
+    const inputs = { ...payload };
+    delete inputs.model;
+    const response = await binding.run(KIMI_K3_MODEL, inputs, {
+      gateway: { id: gateway, metadata },
+      returnRawResponse: true,
+      signal: request.signal,
+    });
+
+    const logId = binding.aiGatewayLogId;
+    if (!logId || response.headers.has("cf-aig-log-id")) return response;
+    const headers = new Headers(response.headers);
+    headers.set("cf-aig-log-id", logId);
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  };
+}
+
 // Platform free-tier path: route through the deployment's configured AI Gateway (platform-funded).
 // Used only for requests that are NOT billed to a connected user's account.
 function getModelViaGateway(
@@ -476,6 +540,20 @@ function getModelViaGateway(
   // takes no account id (the binding channel carries identity); the paths are otherwise the
   // same, so the model descriptors are built identically from either root.
   const gateway = gwConfig.gateway;
+  if (isCloudflareCatalogModel(config)) {
+    if (!binding) {
+      throw new Error(
+          "Kimi K3 requires the same-account Workers AI binding transport.");
+    }
+    return makeHandle({
+      model: cloudflareChatModel(
+          config, "https://workers-binding.ai/ai-catalog/v1"),
+      apiKey: CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL,
+      fetch: kimiK3BindingFetch(binding, gateway, metadata),
+      sessionAffinity: options.sessionAffinity,
+      aiGatewayLogRoute: logRoute(gateway),
+    });
+  }
   const gatewayUrl = binding
       ? `https://workers-binding.ai/ai-gateway/gateways/${gateway}`
       : `${gatewayBase}/${gateway}`;
@@ -529,27 +607,18 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
         sessionAffinity,
       });
     case "cloudflare": {
-      // Workers AI is fetch-only (no Workers-binding transport), so outside AI Gateway mode it's
-      // BYOK like every other provider: the user's own account ID and API token come from the
-      // model config. (The REST endpoint is account-scoped, hence the extra accountId field.)
+      // Outside platform Gateway mode, Cloudflare AI is BYOK: the user's account ID and API
+      // token come from the model config. The account-scoped OpenAI-compatible endpoint accepts
+      // both Workers AI model IDs and third-party Cloudflare AI catalog IDs.
       if (!config.accountId || !config.apiToken) {
+        const modelKind = isCloudflareCatalogModel(config) ? "Cloudflare AI" : "Workers AI";
         throw new Error(
-            "This Workers AI model has no Cloudflare credentials. Re-add it with your " +
+            `This ${modelKind} model has no Cloudflare credentials. Re-add it with your ` +
             "Cloudflare account ID and an API token that permits Workers AI.");
       }
       return makeHandle({
-        model: {
-          id: config.model,
-          name: catalog?.name ?? config.model,
-          api: "openai-completions",
-          provider: "cloudflare-workers-ai",
-          baseUrl: `https://api.cloudflare.com/client/v4/accounts/${config.accountId}/ai/v1`,
-          reasoning: catalog?.reasoning ?? false,
-          input: catalog?.input ?? ["text"],
-          cost: catalog?.cost ?? ZERO_COST,
-          ...window,
-          compat: workersAiCompat(catalog),
-        },
+        model: cloudflareChatModel(config,
+            `https://api.cloudflare.com/client/v4/accounts/${config.accountId}/ai/v1`),
         apiKey: config.apiToken,
         sessionAffinity,
       });

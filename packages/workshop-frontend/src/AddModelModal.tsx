@@ -20,7 +20,7 @@ const PROVIDER_LABELS: Record<AiModelProvider, string> = {
   anthropic: 'Anthropic',
   openai: 'OpenAI',
   google: 'Google',
-  cloudflare: 'Cloudflare Workers AI',
+  cloudflare: 'Cloudflare AI',
   ollama: 'Ollama',
 }
 
