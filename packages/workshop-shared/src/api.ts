@@ -1180,6 +1180,8 @@ export const WORKERS_AI_OUTPUT_LIMIT = 32768;
 // OpenAI counts the requested response cap against token rate limits. Keep interactive agent
 // turns below the model maximum so a single request does not reserve 128K wholesale tokens.
 const OPENAI_OUTPUT_LIMIT = 32768;
+// Cloudflare Unified Billing can reject Sol at 32K with wholesale rate limit code 2018.
+const OPENAI_SOL_OUTPUT_LIMIT = 16384;
 
 /**
  * Models offered in the picker. `contextWindow` is the maximum tokens one request may total.
@@ -1211,7 +1213,7 @@ export const SUGGESTED_MODELS: Record<
   },
   "openai": {
     "gpt-5.6-sol": {name: "GPT 5.6 Sol", contextWindow: 1050000,
-      outputLimit: OPENAI_OUTPUT_LIMIT},
+      outputLimit: OPENAI_SOL_OUTPUT_LIMIT},
     "gpt-5.6-luna": {name: "GPT 5.6 Luna", contextWindow: 1050000,
       outputLimit: OPENAI_OUTPUT_LIMIT},
     "gpt-5.6-terra": {name: "GPT 5.6 Terra", contextWindow: 1050000,

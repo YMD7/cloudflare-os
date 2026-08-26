@@ -108,7 +108,9 @@ describe("compaction trigger", () => {
 
     // OpenAI rate limits reserve the requested response cap. The gateway-facing catalog keeps
     // that cap below the provider maximum so one turn does not reserve 128K wholesale tokens.
-    for (let model of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+    expect(getModelTokenLimits({provider: "openai", model: "gpt-5.6-sol", apiToken: ""}))
+        .toEqual({inputBudget: 1_033_616, maxOutputTokens: 16_384});
+    for (let model of ["gpt-5.6-terra", "gpt-5.6-luna"]) {
       expect(getModelTokenLimits({provider: "openai", model, apiToken: ""}))
           .toEqual({inputBudget: 1_017_232, maxOutputTokens: 32_768});
     }
