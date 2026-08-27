@@ -139,6 +139,48 @@ export type ContextGitTokenCreateResult = {
   remote: string;
 };
 
+/** One valid Agent Skill discovered under a public GitHub URL. */
+export type GitHubSkillImportCandidate = {
+  /** Repository-relative path to the skill's SKILL.md. */
+  manifestPath: string;
+  name: string;
+  description: string;
+  fileCount: number;
+  totalBytes: number;
+};
+
+/** One invalid SKILL.md found while inspecting a public GitHub URL. */
+export type GitHubSkillImportInvalidManifest = {
+  path: string;
+  error: string;
+};
+
+/** Read-only result shown before a user approves a public GitHub Skill import. */
+export type GitHubSkillImportPreview = {
+  sourceUrl: string;
+  repositoryUrl: string;
+  ref: string;
+  revision: string;
+  selectedPath: string;
+  licenseUrl?: string;
+  skills: GitHubSkillImportCandidate[];
+  invalidManifests: GitHubSkillImportInvalidManifest[];
+  unsupportedPluginComponents: string[];
+};
+
+/** Exact revision and skill manifests selected from a GitHub import preview. */
+export type GitHubSkillImportRequest = {
+  sourceUrl: string;
+  expectedRevision: string;
+  manifestPaths: string[];
+};
+
+/** Summary of a completed public GitHub Skill import. */
+export type GitHubSkillImportResult = {
+  importedSkills: string[];
+  documentCount: number;
+};
+
 /** Collection summary for listings. */
 export type ContextCollectionSummary = {
   id: string;
@@ -333,6 +375,12 @@ export interface ContextApi extends RpcTarget {
   }): Promise<void>;
   deleteContextDocument(collectionId: string, path: string): Promise<void>;
   moveContextDocument(collectionId: string, fromPath: string, toPath: string): Promise<void>;
+  /** Inspect a public GitHub URL without modifying a collection. */
+  previewGitHubSkillImport(sourceUrl: string): Promise<GitHubSkillImportPreview>;
+  /** Import selected skills from the exact public GitHub revision shown in a preview. */
+  importGitHubSkills(
+    collectionId: string, request: GitHubSkillImportRequest,
+  ): Promise<GitHubSkillImportResult>;
   /** Own private collections plus every public one. */
   listEnabledContextCollections(): Promise<EnabledCollectionInfo[]>;
   /** Whether the viewer may edit this collection: own private collection, or public collection as admin. */
