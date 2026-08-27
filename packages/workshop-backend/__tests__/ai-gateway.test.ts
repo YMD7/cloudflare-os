@@ -123,6 +123,27 @@ describe("AiGatewayConfig transport selection", () => {
 });
 
 describe("AiGatewayConfig model order", () => {
+  it("groups models by the configured vendor order", () => {
+    const config = new AiGatewayConfig(env({
+      CF_AI_GATEWAY_ACCOUNT_ID: "account-id",
+      CF_AI_GATEWAY_PROVIDERS: "cloudflare,openai,anthropic",
+    }));
+
+    expect(config.getModelList().map(model => model.id)).toEqual([
+      "@cf/zai-org/glm-5.3-flash",
+      "@cf/qwen/qwen3.8-27b",
+      "@cf/deepseek-ai/deepseek-v4-pro-0813",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+      "claude-opus-5",
+      "claude-sonnet-5",
+      "claude-haiku-4-5",
+      "moonshotai/kimi-k3",
+      "@cf/moonshotai/kimi-k2.7-code",
+    ]);
+  });
+
   it("lists OpenAI models as Sol, Terra, then Luna", () => {
     const config = new AiGatewayConfig(env({
       CF_AI_GATEWAY_ACCOUNT_ID: "account-id",

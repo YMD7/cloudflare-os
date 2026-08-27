@@ -7,6 +7,23 @@ import { UserAiModelRecord } from "./user.js";
 // compared to the actual coding model so there's not much reason to use a smaller model.
 const QUICK_MODEL_ID = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
+// Workers AI は複数のモデル提供者を扱うため、選択欄ではネイティブプロバイダーと同じ
+// 表示順にグループ化する。未指定の提供者は、このグループの後ろで元の順序を維持する。
+const MODEL_VENDOR_DISPLAY_ORDER = [
+  "zai-org", "qwen", "deepseek-ai", "openai", "anthropic",
+];
+
+function getModelVendor(provider: string, modelId: string): string {
+  if (provider !== "cloudflare") return provider;
+  const parts = modelId.split("/");
+  return modelId.startsWith("@cf/") ? (parts[1] ?? provider) : (parts[0] ?? provider);
+}
+
+function getModelVendorRank(provider: string, modelId: string): number {
+  const rank = MODEL_VENDOR_DISPLAY_ORDER.indexOf(getModelVendor(provider, modelId));
+  return rank === -1 ? MODEL_VENDOR_DISPLAY_ORDER.length : rank;
+}
+
 /**
  * Providers whose pi API adapter refuses a custom fetch, so their inference cannot ride the
  * Workers AI binding and needs CF_AI_GATEWAY_API_TOKEN over HTTPS. pi's Google adapter throws
@@ -98,15 +115,18 @@ export class AiGatewayConfig {
    * Get the list of models available through AI Gateway, as AiChatAuthorInfo entries.
    */
   getModelList(): AiChatAuthorInfo[] {
-    let result: AiChatAuthorInfo[] = [];
+    let result: { profile: AiChatAuthorInfo, provider: string }[] = [];
     for (let [provider, models] of Object.entries(SUGGESTED_MODELS)) {
       if (this.providers.has(provider)) {
         for (let [id, model] of Object.entries(models)) {
-          result.push({ type: "agent", id, name: model.name });
+          result.push({ profile: { type: "agent", id, name: model.name }, provider });
         }
       }
     }
-    return result;
+    return result.toSorted((a, b) =>
+      getModelVendorRank(a.provider, a.profile.id) -
+      getModelVendorRank(b.provider, b.profile.id)
+    ).map(entry => entry.profile);
   }
 
   /**

@@ -101,6 +101,16 @@ describe("compaction trigger", () => {
       provider: "cloudflare", model: "@cf/moonshotai/kimi-k2.7-code", apiToken: "",
     })).toEqual({inputBudget: 229_376, maxOutputTokens: 32_768});
 
+    expect(getModelTokenLimits({
+      provider: "cloudflare", model: "@cf/zai-org/glm-5.3-flash", apiToken: "",
+    })).toEqual({inputBudget: 1_015_808, maxOutputTokens: 32_768});
+    expect(getModelTokenLimits({
+      provider: "cloudflare", model: "@cf/qwen/qwen3.8-27b", apiToken: "",
+    })).toEqual({inputBudget: 229_376, maxOutputTokens: 32_768});
+    expect(getModelTokenLimits({
+      provider: "cloudflare", model: "@cf/deepseek-ai/deepseek-v4-pro-0813", apiToken: "",
+    })).toEqual({inputBudget: 1_015_808, maxOutputTokens: 32_768});
+
     // Anthropic publishes an input-only window, so withholding anything would waste it.
     expect(getModelTokenLimits({
       provider: "anthropic", model: "claude-opus-5", apiToken: "",

@@ -1193,6 +1193,18 @@ export const SUGGESTED_MODELS: Record<
   Record<string, {name: string, contextWindow: number, outputLimit?: number}>
 > = {
   "cloudflare": {
+    "@cf/zai-org/glm-5.3-flash": {
+      name: "GLM 5.3 Flash (Workers AI)", contextWindow: 1048576,
+      outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    "@cf/qwen/qwen3.8-27b": {
+      name: "Qwen 3.8 27B (Workers AI)", contextWindow: 262144,
+      outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    "@cf/deepseek-ai/deepseek-v4-pro-0813": {
+      name: "DeepSeek V4 Pro 0813 (Workers AI)", contextWindow: 1048576,
+      outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
     "moonshotai/kimi-k3": {
       name: "Kimi K3 (Cloudflare AI catalog)", contextWindow: 1048576, outputLimit: 131072,
     },
@@ -1200,16 +1212,6 @@ export const SUGGESTED_MODELS: Record<
       name: "Kimi K2.7 Code (Workers AI)", contextWindow: 262144,
       outputLimit: WORKERS_AI_OUTPUT_LIMIT,
     },
-    "@cf/zai-org/glm-5.2": {
-      name: "GLM 5.2 (Workers AI)", contextWindow: 262144, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
-    },
-  },
-  "anthropic": {
-    // TODO: Include Fable -- but we need an admin option to disable it, since many orgs don't
-    //   allow it for ZDR reasons. It's sort of overkill for building gadgets anyway.
-    "claude-opus-5": {name: "Claude Opus 5 (BYOK)", contextWindow: 1000000},
-    "claude-sonnet-5": {name: "Claude Sonnet 5 (BYOK)", contextWindow: 1000000},
-    "claude-haiku-4-5": {name: "Claude Haiku 4.5 (BYOK)", contextWindow: 200000},
   },
   "openai": {
     "gpt-5.6-sol": {name: "GPT 5.6 Sol (BYOK)", contextWindow: 1050000,
@@ -1218,6 +1220,13 @@ export const SUGGESTED_MODELS: Record<
       outputLimit: OPENAI_OUTPUT_LIMIT},
     "gpt-5.6-luna": {name: "GPT 5.6 Luna (BYOK)", contextWindow: 1050000,
       outputLimit: OPENAI_OUTPUT_LIMIT},
+  },
+  "anthropic": {
+    // TODO: Include Fable -- but we need an admin option to disable it, since many orgs don't
+    //   allow it for ZDR reasons. It's sort of overkill for building gadgets anyway.
+    "claude-opus-5": {name: "Claude Opus 5 (BYOK)", contextWindow: 1000000},
+    "claude-sonnet-5": {name: "Claude Sonnet 5 (BYOK)", contextWindow: 1000000},
+    "claude-haiku-4-5": {name: "Claude Haiku 4.5 (BYOK)", contextWindow: 200000},
   },
   "google": {
     "gemini-3.6-flash": {name: "Gemini 3.6 Flash", contextWindow: 1048576},
