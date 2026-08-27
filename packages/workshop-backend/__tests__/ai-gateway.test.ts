@@ -122,6 +122,21 @@ describe("AiGatewayConfig transport selection", () => {
   });
 });
 
+describe("AiGatewayConfig model order", () => {
+  it("lists OpenAI models as Sol, Terra, then Luna", () => {
+    const config = new AiGatewayConfig(env({
+      CF_AI_GATEWAY_ACCOUNT_ID: "account-id",
+      CF_AI_GATEWAY_PROVIDERS: "openai",
+    }));
+
+    expect(config.getModelList().map(model => model.id)).toEqual([
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+    ]);
+  });
+});
+
 describe("getAiGatewayLogCost", () => {
   afterEach(() => vi.unstubAllGlobals());
 

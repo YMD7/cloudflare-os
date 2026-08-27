@@ -1214,9 +1214,9 @@ export const SUGGESTED_MODELS: Record<
   "openai": {
     "gpt-5.6-sol": {name: "GPT 5.6 Sol (BYOK)", contextWindow: 1050000,
       outputLimit: OPENAI_SOL_OUTPUT_LIMIT},
-    "gpt-5.6-luna": {name: "GPT 5.6 Luna (BYOK)", contextWindow: 1050000,
-      outputLimit: OPENAI_OUTPUT_LIMIT},
     "gpt-5.6-terra": {name: "GPT 5.6 Terra (BYOK)", contextWindow: 1050000,
+      outputLimit: OPENAI_OUTPUT_LIMIT},
+    "gpt-5.6-luna": {name: "GPT 5.6 Luna (BYOK)", contextWindow: 1050000,
       outputLimit: OPENAI_OUTPUT_LIMIT},
   },
   "google": {
