@@ -22,6 +22,7 @@ import { obsContext } from "./observability.js";
 import {
   decodeStoredContextBody, encodeStoredContextBody, truncateContextDescription,
 } from "./context-storage.js";
+import type { GitHubSkillImportSourceRecord } from "./github-skill-import.js";
 
 const logger = obsContext.createLogger({
   component: "gatekeeper.context", vendorId: VENDOR_ID,
@@ -106,6 +107,8 @@ function makeContextCollectionStorage(storage: DurableObjectStorage) {
       documents: collection<ContextRecord>()({ primaryKey: "path" }),
       // Data needed to list skills without loading document bodies.
       skillIndex: collection<SkillIndexEntry>()({ primaryKey: "path" }),
+      // Import provenance is implementation state, not a user-authored Context document.
+      githubSkillImports: collection<GitHubSkillImportSourceRecord>()({ primaryKey: "skillName" }),
     },
     singletons: {
       // Sharing domain for cross-DO references.
@@ -254,6 +257,25 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     this.storage.skillIndex.delete(path);
   }
 
+  #validatedDocumentRecord(
+      path: string,
+      doc: { description: string; body: string; contentType?: string },
+      lastUpdated: Date = new Date()): ContextRecord {
+    validateDocumentPath(path);
+    let contentType = doc.contentType || contentTypeFromPath(path);
+    let record = contextRecord({
+      path, name: baseName(path), description: doc.description, contentType, body: doc.body,
+      lastUpdated,
+    });
+    let byteLength = record.body.byteLength + new TextEncoder().encode(
+      JSON.stringify({ ...record, body: "" }),
+    ).byteLength;
+    if (byteLength > MAX_DOCUMENT_BODY_BYTES) {
+      throw new Error(`Document is too large (${byteLength} bytes; max ${MAX_DOCUMENT_BODY_BYTES}).`);
+    }
+    return record;
+  }
+
   #clearSkillIndex(): void {
     // Read the entries before deleting from the same storage collection.
     for (let entry of Array.from(this.storage.skillIndex.list())) {
@@ -373,18 +395,7 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
       path: string,
       doc: { description: string; body: string; contentType?: string }): Promise<void> {
     this.#assertWebWritable();
-    validateDocumentPath(path);
-    let contentType = doc.contentType || contentTypeFromPath(path);
-    let record = contextRecord({
-      path, name: baseName(path), description: doc.description, contentType, body: doc.body,
-      lastUpdated: new Date(),
-    });
-    let byteLength = record.body.byteLength + new TextEncoder().encode(
-      JSON.stringify({ ...record, body: "" }),
-    ).byteLength;
-    if (byteLength > MAX_DOCUMENT_BODY_BYTES) {
-      throw new Error(`Document is too large (${byteLength} bytes; max ${MAX_DOCUMENT_BODY_BYTES}).`);
-    }
+    let record = this.#validatedDocumentRecord(path, doc);
 
     this.storage.transaction(() => {
       let isNew = !this.storage.documents.get(path);
@@ -394,6 +405,58 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
       let meta = this.getMetadata();
       if (isNew) meta.documentCount++;
       meta.lastUpdated = record.lastUpdated;
+      this.storage.metadata.put(meta);
+    });
+    await this.#propagate();
+  }
+
+  /** Atomically create documents while rejecting any existing destination path. */
+  async createContextDocuments(documents: Array<{
+    path: string;
+    description: string;
+    body: string;
+    contentType?: string;
+  }>, githubSkillImports: GitHubSkillImportSourceRecord[] = []): Promise<void> {
+    this.#assertWebWritable();
+    if (documents.length === 0) throw new Error("At least one document is required.");
+
+    let lastUpdated = new Date();
+    let seen = new Set<string>();
+    let records = documents.map(document => {
+      if (seen.has(document.path)) throw new Error(`Duplicate import path: ${document.path}`);
+      seen.add(document.path);
+      return this.#validatedDocumentRecord(document.path, document, lastUpdated);
+    });
+    let sourceNames = new Set<string>();
+    for (let source of githubSkillImports) {
+      if (sourceNames.has(source.skillName)) {
+        throw new Error(`Duplicate GitHub import source: ${source.skillName}`);
+      }
+      sourceNames.add(source.skillName);
+      if (!seen.has(source.destinationManifestPath)) {
+        throw new Error(
+          `GitHub import source has no matching manifest: ${source.destinationManifestPath}`,
+        );
+      }
+    }
+
+    this.storage.transaction(() => {
+      for (let record of records) {
+        if (this.storage.documents.get(record.path)) {
+          throw new Error(`Import destination already exists: ${record.path}`);
+        }
+      }
+      for (let source of githubSkillImports) {
+        if (this.storage.githubSkillImports.get(source.skillName)) {
+          throw new Error(`GitHub import source already exists: ${source.skillName}`);
+        }
+      }
+      for (let record of records) this.#putDocument(record);
+      for (let source of githubSkillImports) this.storage.githubSkillImports.put(source);
+
+      let meta = this.getMetadata();
+      meta.documentCount += records.length;
+      meta.lastUpdated = lastUpdated;
       this.storage.metadata.put(meta);
     });
     await this.#propagate();

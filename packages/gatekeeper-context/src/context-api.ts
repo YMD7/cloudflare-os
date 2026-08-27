@@ -6,7 +6,8 @@ import { validateRpc } from "capnweb-validate";
 import {
   ContextApi, ContextCollectionContent, ContextCollectionMetadata, ContextCollectionVisibility,
   ContextDocument, ContextDocumentSummary, ContextGitTokenCreateResult, ContextGitTokenList,
-  DEFAULT_GIT_BRANCH, EnabledCollectionInfo,
+  DEFAULT_GIT_BRANCH, EnabledCollectionInfo, GitHubSkillImportPreview, GitHubSkillImportRequest,
+  GitHubSkillImportResult,
 } from "./context-types.js";
 import type { ContextCollectionDurableObject } from "./context-collection.js";
 import type { UserLibraryDurableObject } from "./user-library.js";
@@ -15,6 +16,9 @@ import {
   listPublicCollectionsFromKv, metadataToSummary,
 } from "./collection-kv.js";
 import { domainName } from "./domain.js";
+import {
+  prepareGitHubSkillImport, previewGitHubSkillImport,
+} from "./github-skill-import.js";
 
 /** Collections visible to this account's agents. */
 export async function loadEnabledContextCollections(
@@ -253,6 +257,22 @@ export class ContextApiImpl extends RpcTarget implements ContextApi {
   async moveContextDocument(collectionId: string, fromPath: string, toPath: string): Promise<void> {
     await this.#assertCanWrite(collectionId);
     await this.#collection(collectionId).moveContextDocument(fromPath, toPath);
+  }
+
+  async previewGitHubSkillImport(sourceUrl: string): Promise<GitHubSkillImportPreview> {
+    return previewGitHubSkillImport(sourceUrl);
+  }
+
+  async importGitHubSkills(
+    collectionId: string, request: GitHubSkillImportRequest,
+  ): Promise<GitHubSkillImportResult> {
+    await this.#assertCanWrite(collectionId);
+    let prepared = await prepareGitHubSkillImport(request);
+    await this.#collection(collectionId).createContextDocuments(prepared.documents, prepared.sources);
+    return {
+      importedSkills: prepared.importedSkills,
+      documentCount: prepared.documents.length,
+    };
   }
 
   // --- Listing & access ---
