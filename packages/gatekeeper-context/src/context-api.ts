@@ -260,14 +260,18 @@ export class ContextApiImpl extends RpcTarget implements ContextApi {
   }
 
   async previewGitHubSkillImport(sourceUrl: string): Promise<GitHubSkillImportPreview> {
-    return previewGitHubSkillImport(sourceUrl);
+    return previewGitHubSkillImport(sourceUrl, {
+      apiToken: this.env.GITHUB_PUBLIC_API_TOKEN,
+    });
   }
 
   async importGitHubSkills(
     collectionId: string, request: GitHubSkillImportRequest,
   ): Promise<GitHubSkillImportResult> {
     await this.#assertCanWrite(collectionId);
-    let prepared = await prepareGitHubSkillImport(request);
+    let prepared = await prepareGitHubSkillImport(request, {
+      apiToken: this.env.GITHUB_PUBLIC_API_TOKEN,
+    });
     await this.#collection(collectionId).createContextDocuments(prepared.documents, prepared.sources);
     return {
       importedSkills: prepared.importedSkills,

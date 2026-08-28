@@ -17,6 +17,11 @@ const MAX_IMPORTABLE_FILE_BYTES = MAX_DOCUMENT_BODY_BYTES - 16 * 1024;
 
 type Fetcher = typeof fetch;
 
+type GitHubSkillImportFetchOptions = {
+  fetcher?: Fetcher;
+  apiToken?: string;
+};
+
 type ParsedGitHubSource = {
   sourceUrl: string;
   owner: string;
@@ -194,7 +199,10 @@ function githubRequestError(response: Response): Error {
       response.headers.get("x-ratelimit-remaining") === "0") {
     let reset = Number(response.headers.get("x-ratelimit-reset"));
     let suffix = Number.isFinite(reset) ? ` Try again after ${new Date(reset * 1000).toISOString()}.` : "";
-    return new Error(`GitHub's public API rate limit was reached.${suffix}`);
+    return new Error(`GitHub API rate limit was reached.${suffix}`);
+  }
+  if (response.status === 401) {
+    return new Error("GitHub API authentication failed. Check GITHUB_PUBLIC_API_TOKEN.");
   }
   if (response.status === 404) {
     return new Error("GitHub repository or revision was not found. Only public repositories are supported.");
@@ -203,10 +211,17 @@ function githubRequestError(response: Response): Error {
 }
 
 async function fetchGitHubBytes(
-  fetcher: Fetcher, url: string, maxBytes: number, accept: string,
+  fetcher: Fetcher, url: string, maxBytes: number, accept: string, apiToken?: string,
 ): Promise<Uint8Array> {
+  let headers: Record<string, string> = {
+    Accept: accept,
+    "User-Agent": "cloudflare-os-context",
+  };
+  if (apiToken !== undefined && new URL(url).origin === GITHUB_API_ORIGIN) {
+    headers.Authorization = `Bearer ${apiToken}`;
+  }
   let response = await fetcher(url, {
-    headers: { Accept: accept, "User-Agent": "cloudflare-os-context" },
+    headers,
   });
   if (!response.ok) {
     await response.body?.cancel();
@@ -216,9 +231,12 @@ async function fetchGitHubBytes(
 }
 
 async function fetchGitHubJson(
-  fetcher: Fetcher, url: string, maxBytes: number = MAX_GITHUB_JSON_BYTES,
+  fetcher: Fetcher, url: string, apiToken: string | undefined,
+  maxBytes: number = MAX_GITHUB_JSON_BYTES,
 ): Promise<unknown> {
-  let bytes = await fetchGitHubBytes(fetcher, url, maxBytes, "application/vnd.github+json");
+  let bytes = await fetchGitHubBytes(
+    fetcher, url, maxBytes, "application/vnd.github+json", apiToken,
+  );
   try {
     return JSON.parse(new TextDecoder().decode(bytes));
   } catch {
@@ -228,11 +246,12 @@ async function fetchGitHubJson(
 
 async function resolveSnapshot(
   sourceUrl: string, expectedRevision: string | undefined, fetcher: Fetcher,
+  apiToken: string | undefined,
 ): Promise<GitHubSnapshot> {
   let source = parseGitHubSkillSource(sourceUrl);
   let ref = source.ref;
   if (!ref) {
-    let repoJson = await fetchGitHubJson(fetcher, apiUrl(source, ""), 1024 * 1024);
+    let repoJson = await fetchGitHubJson(fetcher, apiUrl(source, ""), apiToken, 1024 * 1024);
     if (!isRecord(repoJson)) throw new Error("GitHub returned invalid repository metadata.");
     ref = requiredString(repoJson, "default_branch", "default branch");
   }
@@ -241,7 +260,7 @@ async function resolveSnapshot(
     throw new Error("GitHub preview revision is invalid. Inspect the URL again.");
   }
   let commitJson = await fetchGitHubJson(
-    fetcher, apiUrl(source, `/commits/${encodeURIComponent(ref)}`), 1024 * 1024,
+    fetcher, apiUrl(source, `/commits/${encodeURIComponent(ref)}`), apiToken, 1024 * 1024,
   );
   if (!isRecord(commitJson)) throw new Error("GitHub returned invalid commit metadata.");
   let revision = requiredString(commitJson, "sha", "commit revision");
@@ -255,7 +274,7 @@ async function resolveSnapshot(
   }
 
   let treeJson = await fetchGitHubJson(
-    fetcher, apiUrl(source, `/git/trees/${encodeURIComponent(treeSha)}?recursive=1`),
+    fetcher, apiUrl(source, `/git/trees/${encodeURIComponent(treeSha)}?recursive=1`), apiToken,
   );
   if (!isRecord(treeJson) || !Array.isArray(treeJson.tree)) {
     throw new Error("GitHub returned an invalid repository tree.");
@@ -402,9 +421,10 @@ function previewFrom(
 
 /** Inspect a public GitHub URL and return valid skills without modifying Context storage. */
 export async function previewGitHubSkillImport(
-  sourceUrl: string, fetcher: Fetcher = fetch,
+  sourceUrl: string, options: GitHubSkillImportFetchOptions = {},
 ): Promise<GitHubSkillImportPreview> {
-  let snapshot = await resolveSnapshot(sourceUrl, undefined, fetcher);
+  let fetcher = options.fetcher ?? fetch;
+  let snapshot = await resolveSnapshot(sourceUrl, undefined, fetcher, options.apiToken);
   return previewFrom(snapshot, await loadCandidates(snapshot, fetcher));
 }
 
@@ -419,7 +439,7 @@ function bytesToBase64(bytes: Uint8Array): string {
 
 /** Download selected skills from the exact revision shown in a preview. */
 export async function prepareGitHubSkillImport(
-  request: GitHubSkillImportRequest, fetcher: Fetcher = fetch,
+  request: GitHubSkillImportRequest, options: GitHubSkillImportFetchOptions = {},
 ): Promise<{
   preview: GitHubSkillImportPreview;
   importedSkills: string[];
@@ -435,7 +455,10 @@ export async function prepareGitHubSkillImport(
     throw new Error("Selected skill paths must be unique.");
   }
 
-  let snapshot = await resolveSnapshot(request.sourceUrl, request.expectedRevision, fetcher);
+  let fetcher = options.fetcher ?? fetch;
+  let snapshot = await resolveSnapshot(
+    request.sourceUrl, request.expectedRevision, fetcher, options.apiToken,
+  );
   let loaded = await loadCandidates(snapshot, fetcher);
   let preview = previewFrom(snapshot, loaded);
   let byPath = new Map(loaded.candidates.map(candidate => [candidate.manifestPath, candidate]));

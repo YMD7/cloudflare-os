@@ -4,6 +4,8 @@ declare namespace Cloudflare {
   interface Env {
     // Public-collections snapshot KV.
     CONTEXT_COLLECTIONS: KVNamespace;
+    // Authenticates public GitHub API reads used by the skill importer.
+    GITHUB_PUBLIC_API_TOKEN: string;
     // Optional Git-compatible backing repos for artifact-backed context collections.
     ARTIFACTS?: Artifacts;
   }

@@ -19,11 +19,16 @@ function json(body: unknown): Response {
   });
 }
 
-function githubFixture(options: { revision?: string; invalidManifest?: boolean } = {}): typeof fetch {
+function githubFixture(options: {
+  revision?: string;
+  invalidManifest?: boolean;
+  onRequest?: (url: URL, init: RequestInit | undefined) => void;
+} = {}): typeof fetch {
   let revision = options.revision ?? REVISION;
   let manifestBody = options.invalidManifest ? "# Missing frontmatter" : SKILL;
-  return async (input) => {
+  return async (input, init) => {
     let url = new URL(typeof input === "string" ? input : input.url);
+    options.onRequest?.(url, init);
     if (url.hostname === "api.github.com" && url.pathname.endsWith("/commits/main")) {
       return json({ sha: revision, commit: { tree: { sha: TREE_SHA } } });
     }
@@ -95,7 +100,7 @@ describe("previewGitHubSkillImport", () => {
   it("finds nested skills and reports unsupported plugin components", async () => {
     let preview = await previewGitHubSkillImport(
       "https://github.com/anthropics/claude-code/tree/main/plugins/frontend-design",
-      githubFixture(),
+      { fetcher: githubFixture() },
     );
 
     expect(preview.skills).toEqual([{
@@ -114,13 +119,36 @@ describe("previewGitHubSkillImport", () => {
   it("reports an invalid manifest without treating it as a skill", async () => {
     let preview = await previewGitHubSkillImport(
       "https://github.com/anthropics/claude-code/tree/main/plugins/frontend-design",
-      githubFixture({ invalidManifest: true }),
+      { fetcher: githubFixture({ invalidManifest: true }) },
     );
     expect(preview.skills).toEqual([]);
     expect(preview.invalidManifests[0]).toMatchObject({
       path: "plugins/frontend-design/skills/frontend-design/SKILL.md",
       error: "Skill manifest must start with YAML frontmatter.",
     });
+  });
+
+  it("sends authentication only to the GitHub API origin", async () => {
+    let requests: { hostname: string; authorization: string | null }[] = [];
+    await previewGitHubSkillImport(
+      "https://github.com/anthropics/claude-code/tree/main/plugins/frontend-design",
+      {
+        apiToken: "test-token",
+        fetcher: githubFixture({
+          onRequest(url, init) {
+            requests.push({
+              hostname: url.hostname,
+              authorization: new Headers(init?.headers).get("Authorization"),
+            });
+          },
+        }),
+      },
+    );
+
+    expect(requests.filter(request => request.hostname === "api.github.com")
+      .every(request => request.authorization === "Bearer test-token")).toBe(true);
+    expect(requests.filter(request => request.hostname === "raw.githubusercontent.com")
+      .every(request => request.authorization === null)).toBe(true);
   });
 });
 
@@ -130,7 +158,7 @@ describe("prepareGitHubSkillImport", () => {
       sourceUrl: "https://github.com/anthropics/claude-code/tree/main/plugins/frontend-design",
       expectedRevision: REVISION,
       manifestPaths: ["plugins/frontend-design/skills/frontend-design/SKILL.md"],
-    }, githubFixture());
+    }, { fetcher: githubFixture() });
 
     expect(result.importedSkills).toEqual(["frontend-design"]);
     expect(result.documents.map(document => document.path)).toEqual([
@@ -151,7 +179,7 @@ describe("prepareGitHubSkillImport", () => {
       sourceUrl: "https://github.com/anthropics/claude-code/tree/main/plugins/frontend-design",
       expectedRevision: REVISION,
       manifestPaths: ["plugins/frontend-design/skills/frontend-design/SKILL.md"],
-    }, githubFixture({ revision: "3".repeat(40) }))).rejects.toThrow(
+    }, { fetcher: githubFixture({ revision: "3".repeat(40) }) })).rejects.toThrow(
       "The GitHub source changed after preview",
     );
   });

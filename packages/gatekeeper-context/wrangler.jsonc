@@ -33,6 +33,10 @@
     }
   ],
 
+  "secrets": {
+    "required": ["GITHUB_PUBLIC_API_TOKEN"]
+  },
+
   // Optional: add an Artifacts binding named ARTIFACTS to enable Git-backed collections.
   "observability": {
     "enabled": true,
