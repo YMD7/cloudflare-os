@@ -58,13 +58,13 @@ import {
 const logger = createWorkshopLogger("workshop.overseer");
 export const AGENT_RUNNING_ERROR_MESSAGE = "Agent is running, wait for it to finish.";
 
-let CODE_MODE_HARNESS =
+export const CODE_MODE_HARNESS =
 `import { WorkerEntrypoint, restore } from "cloudflare:workers";
 import agent from "agent.js";
 
 export default class extends WorkerEntrypoint {
   verify() {}
-  async run(self, callbackResolvers, restoreForger) {
+  async run(self, callbackResolvers, restoreForger, cancellation) {
     let env = this.env;
     if (callbackResolvers) {
       for (let [index, {resolve, reject}] of Object.entries(callbackResolvers)) {
@@ -92,7 +92,22 @@ export default class extends WorkerEntrypoint {
         }
       }
     }
-    await agent(self, env, this.ctx);
+    let execution = agent(self, env, this.ctx);
+    if (!cancellation) {
+      await execution;
+      return;
+    }
+
+    try {
+      let abortReason = await Promise.race([
+        execution.then(() => null),
+        cancellation.wait(),
+      ]);
+      if (abortReason) return;
+      await execution;
+    } finally {
+      await cancellation.release();
+    }
   }
 }
 `;
@@ -169,7 +184,8 @@ interface CodeModeEntrypoint extends WorkerEntrypoint {
         resolve: NativeRpcStub<(v: unknown) => void>,
         reject: NativeRpcStub<(e: unknown) => void>
       }>,
-      restoreForger?: NativeRpcStub<RestoreForgerImpl>): Promise<void>;
+      restoreForger?: NativeRpcStub<RestoreForgerImpl>,
+      cancellation?: NativeRpcStub<CodeModeCancellation>): Promise<void>;
 }
 
 interface RestoreForgerEntrypoint extends WorkerEntrypoint {
@@ -199,6 +215,48 @@ class RestoreForgerImpl extends NativeRpcTarget {
   forge(bindingName: string, params: unknown): Promise<unknown> {
     return this.#impl.forgeRestoreStubForBinding(
         this.#chatId, this.#bindings, bindingName, params);
+  }
+}
+
+/** @internal Dynamic Worker Loaderの統合テスト用にexportする。 */
+export class CodeModeCancellation extends NativeRpcTarget {
+  #signal: AbortSignal;
+  #settled: string | null | undefined;
+  #resolve?: (reason: string | null) => void;
+  #onAbort = () => {
+    let reason = this.#signal.reason;
+    this.#settle(reason instanceof Error ? reason.message : `${reason ?? "Agent canceled."}`);
+  };
+
+  constructor(signal: AbortSignal) {
+    super();
+    this.#signal = signal;
+    if (signal.aborted) {
+      this.#onAbort();
+    } else {
+      signal.addEventListener("abort", this.#onAbort, {once: true});
+    }
+  }
+
+  wait(): Promise<string | null> {
+    if (this.#settled !== undefined) return Promise.resolve(this.#settled);
+    return new Promise(resolve => { this.#resolve = resolve; });
+  }
+
+  release(): void {
+    this.#settle(null);
+  }
+
+  #settle(reason: string | null): void {
+    if (this.#settled !== undefined) return;
+    this.#settled = reason;
+    this.#signal.removeEventListener("abort", this.#onAbort);
+    this.#resolve?.(reason);
+    this.#resolve = undefined;
+  }
+
+  [Symbol.dispose](): void {
+    this.release();
   }
 }
 
@@ -1129,20 +1187,12 @@ class OverseerImpl implements AgentHooks {
 
   #preparingChatMessages = new Map<number, Promise<void>>();
 
-  // Set of chatIds that currently have a running agent turn. Used to manage the DO alarm (held
-  // while any agent runs) and to let `alarm()` wait for all agents to finish.
+  // 実行中のagent turnを持つchatId。agent実行中のDO alarm heartbeat管理に使用する。
   #runningAgents = new Set<number>();
 
-  // If `alarm()` is currently waiting for all agents to finish, this resolves its wait. Invoked
-  // when the running-agent count drops to zero.
-  #allAgentsIdleWaiters: (() => void)[] = [];
-
-  // How long to set the keep-alive alarm into the future. Whenever the agent count goes from zero
-  // to one, we schedule an alarm this far out; whenever it drops back to zero, we clear it. The
-  // alarm guarantees the DO is restarted (and the agents resumed) after a server restart, even if
-  // no client reconnects. While an agent is actively running and the DO is alive, the agent itself
-  // keeps the DO alive, so the alarm typically never fires.
-  static #AGENT_KEEPALIVE_ALARM_MS = 60_000;
+  // Durable Objectの非活動タイムアウトより十分短い間隔にする。各alarmは次回分を設定して
+  // すぐに終了するため、長いagent turnの待機でalarm handlerのwall-timeを消費しない。
+  static #AGENT_KEEPALIVE_ALARM_MS = 30_000;
 
   addChatSubscriber(subscriber: RpcStub<AiChatSubscriber>) {
     this.#chatSubscribers.add(subscriber);
@@ -1289,8 +1339,9 @@ class OverseerImpl implements AgentHooks {
     let wasEmpty = this.#runningAgents.size === 0;
     this.#runningAgents.add(chatId);
     if (wasEmpty) {
-      // Zero -> one running agents: schedule the keep-alive alarm.
-      this.ctx.storage.setAlarm(Date.now() + OverseerImpl.#AGENT_KEEPALIVE_ALARM_MS);
+      // 実行中agentが0件から1件になった時点でkeep-alive alarmを設定する。
+      this.ctx.waitUntil(
+          this.ctx.storage.setAlarm(Date.now() + OverseerImpl.#AGENT_KEEPALIVE_ALARM_MS));
     }
   }
 
@@ -1303,13 +1354,9 @@ class OverseerImpl implements AgentHooks {
     this.#runningAgents.delete(chatId);
     this.storage.activeAgents.delete(chatId);
     if (this.#runningAgents.size === 0) {
-      // One -> zero running agents: replace the keep-alive alarm with any response-target retry/sweep
-      // alarm that is now due, and wake any `alarm()` waiter.
+      // 実行中agentが1件から0件になった時点で、keep-alive alarmを期限到来済みの
+      // response-target retry/sweep alarmに置き換える。
       this.#updateExternalMessageResponseDeliveryAlarm();
-      for (let waiter of this.#allAgentsIdleWaiters) {
-        waiter();
-      }
-      this.#allAgentsIdleWaiters = [];
     }
   }
 
@@ -1352,12 +1399,13 @@ class OverseerImpl implements AgentHooks {
     });
   }
 
-  // Resolves once no agents are running. Used by `alarm()` to keep the DO alive until all running
-  // agents complete.
-  async waitForAllAgentsToComplete(): Promise<void> {
-    if (this.#runningAgents.size === 0) return;
-
-    await new Promise<void>(resolve => { this.#allAgentsIdleWaiters.push(resolve); });
+  // agent実行中はalarmを再設定して速やかに終了する。共有alarmをagent heartbeatとして
+  // 消費した場合はtrueを返し、呼び出し側はexternal messageの配信を延期する。
+  async refreshRunningAgentKeepaliveAlarm(): Promise<boolean> {
+    if (this.#runningAgents.size === 0) return false;
+    await this.ctx.storage.setAlarm(
+        Date.now() + OverseerImpl.#AGENT_KEEPALIVE_ALARM_MS);
+    return true;
   }
 
   // Resume a single interrupted agent turn. Re-resolves the model config from the initiator's user
@@ -5574,6 +5622,7 @@ class OverseerImpl implements AgentHooks {
   async executeCodeMode(chatId: number, code: string,
                         initiator: AiChatAuthorInfo, initiatorModelId: string,
                         bindings: Record<string, ChatBindingEntry>,
+                        abortSignal: AbortSignal,
                         onOutputText?: (delta: string) => void)
       : Promise<string> {
     let bytes = new Uint8Array(16);
@@ -5650,21 +5699,26 @@ class OverseerImpl implements AgentHooks {
       }
 
       let error: string | undefined;
+      let cancellation = new CodeModeCancellation(abortSignal);
       try {
         // The forger is a transient stub argument, so the capability to forge persistent
         // gadget-restore stubs lives exactly as long as this run() call.
         await entrypoint.run(selfStub, callbackResolvers,
-            new RestoreForgerImpl(this, chatId, bindings));
+            new RestoreForgerImpl(this, chatId, bindings), cancellation);
+        abortSignal.throwIfAborted();
       } catch (err) {
+        abortSignal.throwIfAborted();
         if (err instanceof Error && err.stack) {
           error = err.stack;
         } else {
           error = `${err}`;
         }
         onOutputText?.(`\n\nUncaught exception: ${error}`);
+      } finally {
+        cancellation[Symbol.dispose]();
       }
 
-      let timeout = scheduler.wait(5000).then(() => { return null; })
+      let timeout = scheduler.wait(5000, {signal: abortSignal}).then(() => { return null; })
       let trace = await Promise.race([tracePromise, timeout])
 
       if (!trace) {
@@ -6542,18 +6596,12 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * The alarm handler kicks in when we've had running agents that haven't completed for at least a
-   * minute. This serves a few purposes:
-   * - If the DO is still running when this is called, but the client has closed their browser and
-   *   so isn't holding the DO alive anymore, the alarm handler will take over and hold the DO
-   *   open until it's done.
-   * - If the DO somehow died since the agents were scheduled, the alarm will wake it up (and the
-   *   DO constructor will have rescheduled the agents, before alarm() itself runs).
-   * - If the DO dies *while* the alarm is running, the system will retry the alarm, thus resuming
-   *   the agents yet again.
+   * agent実行中は共有alarmを短いheartbeatとして使用する。退避されたDOを再起動し、
+   * constructorから永続化済みturnを再開する。長いagent turnによるDurable Object alarmの
+   * wall-time超過を防ぐため、handlerは速やかに終了する。
    */
   async alarm() {
-    await this.impl.waitForAllAgentsToComplete();
+    if (await this.impl.refreshRunningAgentKeepaliveAlarm()) return;
     await this.impl.deliverReadyExternalMessageResponses();
   }
 

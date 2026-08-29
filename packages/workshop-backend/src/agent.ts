@@ -325,6 +325,7 @@ export interface AgentHooks {
   executeCodeMode(chatId: number, code: string,
                    initiator: AiChatAuthorInfo, initiatorModelId: string,
                    bindings: Record<string, ChatBindingEntry>,
+                   abortSignal: AbortSignal,
                    onOutputText?: (delta: string) => void): Promise<string>;
   activeAgentCallbackCount(chatId: number): number;
   rejectAllAgentCallbacks(chatId: number, error: string): void;
@@ -2856,6 +2857,7 @@ export async function runAgent(
 
           let output = await hooks.executeCodeMode(
               chatId, code, initiator, author.id, Object.fromEntries(chatBindings),
+              abortSignal,
               delta => emitStreamEvent({
                 type: "toolOutputDelta",
                 toolCallId,

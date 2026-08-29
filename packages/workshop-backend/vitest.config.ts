@@ -19,6 +19,9 @@ export default defineConfig({
         durableObjects: {
           TEST_OVERSEER: { className: 'OverseerDurableObject', useSQLite: true },
         },
+        workerLoaders: {
+          LOADER: {},
+        },
       },
     }),
   ],
