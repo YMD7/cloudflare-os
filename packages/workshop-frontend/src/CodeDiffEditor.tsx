@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Editor } from '@monaco-editor/react'
+import { Editor } from './monaco'
 import { Columns, Rows } from '@phosphor-icons/react'
 import type { editor } from 'monaco-editor'
 import type * as Y from 'yjs'

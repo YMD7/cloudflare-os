@@ -17,10 +17,28 @@ catalog:
   # decorators capnweb-validate's `@validateRpc()` relies on (cloudflare/workers-sdk#12626).
   vite: 7.3.6
   vite-plus: ^0.2.8
-  vitest: ^4.1.10
+  vitest: ^4.1.11
   wrangler: ^4.119.0
 
 overrides:
+  # Vite+の固定依存も含め、Vitest 4系をGHSA-82fw-gwwq-j7x9の修正版に統一する。
+  vitest: 4.1.11
+  '@vitest/browser': 4.1.11
+  '@vitest/browser-preview': 4.1.11
+  '@vitest/expect': 4.1.11
+  '@vitest/mocker': 4.1.11
+  '@vitest/pretty-format': 4.1.11
+  '@vitest/runner': 4.1.11
+  '@vitest/snapshot': 4.1.11
+  '@vitest/spy': 4.1.11
+  '@vitest/utils': 4.1.11
+  # Miniflareの固定依存を修正する。Wranglerとworkerdの更新は行わない。
+  'sharp@0.35.2': 0.35.4
+  'undici@>=7.0.0 <7.29.1': 7.29.1
+  # GHSA-2v37-7h3g-55p8、およびIP解析・HTMLサニタイズの修正版。
+  'nanoid@>=3.0.0 <3.3.18': 3.3.18
+  'ip-address@>=10.0.0 <10.7.1': 10.7.1
+  'dompurify@>=3.0.0 <3.4.16': 3.4.16
   # Vitest peers can resolve vite@latest, so the version is pinned rather than ranged. Points at the
   # catalog so this and the manifests can't disagree: a catalog only covers what a workspace
   # manifest declares itself, and the override is what reaches vite as somebody else's peer.
@@ -49,3 +67,6 @@ allowBuilds:
   protobufjs: true
   sharp: true
   workerd: true
+
+patchedDependencies:
+  monaco-editor@0.56.0: patches/monaco-editor@0.56.0.patch
