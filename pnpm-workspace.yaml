@@ -38,6 +38,13 @@ catalog:
   zod: ^4.6.5
 
 overrides:
+  # 固定版で適用済みの修正と、移行時の監査で確認した公開済み修正版を維持する。
+  'undici@>=7.0.0 <7.29.1': 7.29.1
+  'nanoid@>=3.0.0 <3.3.18': 3.3.18
+  'ip-address@>=10.0.0 <10.7.1': 10.7.1
+  # 6系の主要変更は別hostへのFTP転送を既定で拒否する安全化。get-uriのClient契約は維持する。
+  'basic-ftp@>=5.0.0 <6.2.1': 6.2.1
+  'source-map-js@>=1.0.0 <1.2.2': 1.2.2
   # Keep the test pool's Wrangler/Miniflare/workerd stack aligned with the workspace toolchain.
   '@cloudflare/vitest-pool-workers>miniflare': "catalog:"
   '@cloudflare/vitest-pool-workers>wrangler': "catalog:"
