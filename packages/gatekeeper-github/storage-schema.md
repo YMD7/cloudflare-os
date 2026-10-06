@@ -16,9 +16,9 @@ Keys:
 
 - `callback` -> stored `GatekeeperConnectCallback` fetcher for the connected Workshop account.
 - `nonce` -> `{ value: string, expiresAt: number, stage: "initiation" | "oauth" }`.
-- `accessToken` -> GitHub OAuth access token string.
-- `scopes` -> `string[]` of granted OAuth scopes.
-- `expiredNotified` -> boolean guard so `credentialsExpired()` is only sent once per expired credential set.
+- `credentials` -> the live `GitHubOAuthGrant`, `{ accessToken, scopes, refreshToken?, expiresAt? }`, owned by the kit's `CredentialCoordinator` along with its `credentials:*` fence keys. `refreshToken` and `expiresAt` are present only for an expiring grant (GitHub's default for OAuth apps since August 2026): its access token lasts eight hours and is refreshed shortly before it expires, and each refresh rotates both tokens.
+- `accessToken`, `scopes` -> the layout from before expiring grants were supported, migrated into `credentials` on first read and then deleted.
+- `expiredNotified`, `expiredNotifiedArm` -> the kit's expiry latch, so `credentialsExpired()` is only sent once per dead grant. Every credential replacement re-arms it.
 - `reconnecting` -> boolean flag indicating an in-progress reconnect flow.
 
 No per-user SQL tables are used.
@@ -121,7 +121,8 @@ Short-lived caches still use `cache:*` keys and store:
 Implemented TTL cache families:
 
 - `cache:viewer` -> `{ actor: GitHubActor, fetchedAt: number }`
-- `cache:repo:<owner>:<repo>` -> `GitHubRepoMetadata`
+- `cache:repo-v2:<owner>:<repo>` -> `GitHubRepoMetadata` (v2: the shape gained `defaultBranch`,
+  and etag revalidation can keep an old-shaped entry alive past the TTL)
 - `cache:issue:<realId>` -> `GitHubIssueDetails`
 - `cache:pull:<realId>` -> `GitHubPullRequestDetails`
 - `cache:list-issues:<encodedQuery>` -> `GitHubIssueSummary[]`
@@ -130,14 +131,21 @@ Implemented TTL cache families:
 - `cache:search-pulls:<encodedQuery>` -> `GitHubPullRequestSummary[]`
 - `cache:discussion-reviews:<realId>:p<page>` -> `GitHubDiscussionEntry[]` review-summary pages for pull discussions
 - `cache:discussion-review-comments:<realId>:<reviewId>` -> review comments attached to one pull-request review
-- `cache:diff:<realOrResolvedId>:<headSha>` -> `{ revision, files }`
-- `cache:diff-provisional:<provisionalPullId>` -> provisional diff snapshot from branch comparison
+- `cache:resolve-ref:<encodedRef>` -> full commit id the ref resolved to
+- `cache:diff-v2:<realId>:<baseSha>:<headSha>` -> `{ revision, files }` (v2: the revision gained
+  `mergeBaseSha`)
+- `cache:compare-provisional-v2:<provisionalPullId>` -> provisional diff snapshot from branch
+  comparison (v2: same `mergeBaseSha` addition)
+- `cache:merge-base:<baseSha>:<headSha>` -> merge base commit id of the two commits
 
 ### Cache TTLs
 
 - Viewer cache: 5 minutes
-- Entity caches (`repo`, `issue`, `pull`, `discussion-reviews`, `discussion-review-comments`, `diff`): 30 seconds
+- Entity caches (`repo-v2`, `issue`, `pull`, `discussion-reviews`, `discussion-review-comments`,
+  `resolve-ref`, `diff-v2`): 30 seconds
 - List/search caches: 15 seconds
+- `merge-base` entries never expire (a merge base is a pure function of its two key commits);
+  only the generation bump below evicts them
 
 After a TTL expires, cached GET responses are conditionally revalidated with GitHub using the
 stored `etag` where available. A `304 Not Modified` response refreshes `fetchedAt` without

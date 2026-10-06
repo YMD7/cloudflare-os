@@ -8,7 +8,7 @@ import {
 } from "../src/agent-compaction";
 import {applyCodeChange, type CodeChange} from "@gadgets/workshop-shared/code-change";
 import type {Api, AssistantMessage, Message, Model} from "@earendil-works/pi-ai";
-import type {ChatBindingEntry} from "../src/agent";
+import type {ChatBindingEntry} from "../src/storage-schema/overseer-storage";
 
 const user: AiChatAuthorInfo = {type: "user", id: "user", name: "User"};
 const agent: AiChatAuthorInfo = {type: "agent", id: "model", name: "Agent"};
@@ -99,8 +99,19 @@ describe("compaction trigger", () => {
 
     // Anthropic publishes an input-only window, so withholding anything would waste it.
     expect(getModelTokenLimits({
-      provider: "anthropic", model: "claude-opus-5", apiToken: "",
+      provider: "anthropic", model: "claude-opus-5-5", apiToken: "",
     })).toEqual({inputBudget: 1_000_000, maxOutputTokens: undefined});
+  });
+
+  it("keeps the 272K compaction budget with deployment output caps", () => {
+    for (let [model, maxOutputTokens] of [
+      ["gpt-5.6-sol", 16_384], ["gpt-5.6-luna", 32_768], ["gpt-5.6-terra", 32_768],
+      ["gpt-6.1-sol", 16_384], ["gpt-6-sol", 16_384],
+      ["gpt-6-luna", 32_768], ["gpt-6-astra", 32_768],
+    ] as const) {
+      expect(getModelTokenLimits({provider: "openai", model, apiToken: ""}))
+          .toEqual({inputBudget: 272_000, maxOutputTokens});
+    }
   });
 
   // Workers AI rejects a request whose prompt and response cap together exceed the window, so a
@@ -112,6 +123,63 @@ describe("compaction trigger", () => {
     // Other providers fall back to the assumed window with nothing withheld.
     expect(getModelTokenLimits({provider: "ollama", model: "local", apiToken: ""}))
         .toEqual({inputBudget: 128_000, maxOutputTokens: undefined});
+  });
+
+  it("lets the model config override the window and output limit", () => {
+    expect(getModelTokenLimits({
+      provider: "anthropic", model: "claude-unlisted", apiToken: "",
+      contextWindow: 1_000_000, outputLimit: 64_000,
+    })).toEqual({inputBudget: 936_000, maxOutputTokens: 64_000});
+
+    // An override beats the model table, too.
+    expect(getModelTokenLimits({
+      provider: "cloudflare", model: "@cf/moonshotai/kimi-k2.7-code", apiToken: "",
+      outputLimit: 16_384,
+    })).toEqual({inputBudget: 245_760, maxOutputTokens: 16_384});
+  });
+
+  it("takes the config's compaction budget ahead of the model's own", () => {
+    let gpt = {provider: "openai" as const, model: "gpt-6-sol", apiToken: ""};
+    // Below the suggested 272K, and above it.
+    expect(getModelTokenLimits({...gpt, compactionInputBudget: 100_000}))
+        .toEqual({inputBudget: 100_000, maxOutputTokens: 16_384});
+    expect(getModelTokenLimits({...gpt, compactionInputBudget: 500_000}))
+        .toEqual({inputBudget: 500_000, maxOutputTokens: 16_384});
+
+    // A model that declares no budget of its own sizes against its window.
+    expect(getModelTokenLimits({
+      provider: "anthropic", model: "claude-opus-5-5", apiToken: "", compactionInputBudget: 200_000,
+    })).toEqual({inputBudget: 200_000, maxOutputTokens: undefined});
+
+    // Absent and undefined are the same.
+    expect(getModelTokenLimits({...gpt, compactionInputBudget: undefined}))
+        .toEqual(getModelTokenLimits(gpt));
+  });
+
+  it("caps the config's compaction budget at what the window leaves for a prompt", () => {
+    // 応答用の16,384トークンを1,050,000トークンのウィンドウから確保する。
+    let gpt = {provider: "openai" as const, model: "gpt-6-sol", apiToken: ""};
+    expect(getModelTokenLimits({...gpt, compactionInputBudget: 1_033_616}).inputBudget)
+        .toBe(1_033_616);
+    expect(getModelTokenLimits({...gpt, compactionInputBudget: 1_033_617}).inputBudget)
+        .toBe(1_033_616);
+    expect(getModelTokenLimits({...gpt, compactionInputBudget: Infinity}).inputBudget)
+        .toBe(1_033_616);
+
+    expect(getModelTokenLimits({
+      provider: "anthropic", model: "claude-opus-5-5", apiToken: "",
+      compactionInputBudget: 2_000_000,
+    }).inputBudget).toBe(1_000_000);
+    expect(getModelTokenLimits({
+      provider: "cloudflare", model: "@cf/moonshotai/kimi-k2.7-code", apiToken: "",
+      compactionInputBudget: 262_144,
+    })).toEqual({inputBudget: 229_376, maxOutputTokens: 32_768});
+
+    // The config's own window and output limit decide the room.
+    expect(getModelTokenLimits({
+      provider: "anthropic", model: "claude-unlisted", apiToken: "",
+      contextWindow: 100_000, outputLimit: 20_000, compactionInputBudget: 90_000,
+    }).inputBudget).toBe(80_000);
   });
 
   it("recognizes /compact as the newest message, and only there", () => {
@@ -361,6 +429,23 @@ describe("compaction checkpoint state", () => {
     expect(state.nextChangeId).toBe(1);
   });
 
+  // A delivered call's arguments stay reachable under the name stamped on its message; a message
+  // from before calls were durable carries no name, and its arguments are gone.
+  it("binds a delivered call's arguments by the name stamped on it, and a legacy call not at all",
+      () => {
+    let state = buildState([
+      record(0, agent, {
+        type: "agentCallback", methodName: "run", argsSummary: "[0]: 1", bindingName: "run_ARGS",
+      }),
+      record(1, agent, {type: "agentCallback", methodName: "run", argsSummary: "[0]: 2"}),
+    ], 2);
+
+    expect(state.chatBindings).toEqual([
+      ["APP", {type: "workpiece", id: 1}],
+      ["run_ARGS", {type: "value", messageSequence: 0}],
+    ]);
+  });
+
   it("carries a previous checkpoint's proposed state forward", () => {
     let previous = {
       chatId: 1, compactedTo: 3, summary: "earlier",
@@ -434,6 +519,49 @@ describe("compaction checkpoint state", () => {
       record(0, user, {type: "changes", conversionBoundary: true, change: codeChange("a")}),
     ]);
     expect(proposed.map(batch => batch.sequence)).toEqual([0]);
+  });
+
+  it("drops a re-rooted gadget's earlier changes, the previous checkpoint's included", () => {
+    // Gadget 1 is edited in two batches either side of a checkpoint, then re-rooted at a merge
+    // commit; gadget 2's edit is untouched by the re-root. The re-root's declaration keeps the
+    // head it merged.
+    let other: CodeChange = {2: [["other.js", {set: "other"}]]};
+    let previous = {
+      chatId: 1, compactedTo: 1, summary: "earlier",
+      ...buildState([record(0, agent, {
+        type: "changes", change: {...codeChange("a", "first.js"), ...other}, pins: [pin7],
+      })], 1),
+    };
+    let reroot = {gadgetId: 1, baseCommit: "c".repeat(40), mergedCommit: "d".repeat(40)};
+
+    let next = buildCompactionState([
+      record(1, agent, {type: "changes", change: codeChange("b", "second.js")}),
+      record(2, user, {type: "changes", pins: [reroot], mainlineMerge: {conflictPaths: []}}),
+      record(3, agent, {type: "changes", change: codeChange("c", "third.js")}),
+    ], 4, initialBindings, previous);
+
+    expect(next.pins).toEqual([pin7, reroot]);
+    expect(filesIn(next.proposedChange)).toEqual(["third.js"]);
+    expect(next.proposedChange![2]).toEqual(other[2]);
+
+    // With nothing recorded since, the re-root leaves no change at all, never an empty one.
+    let rootedOnly = buildCompactionState([
+      record(1, user, {type: "changes", pins: [reroot], mainlineMerge: {conflictPaths: []}}),
+    ], 2, initialBindings, {
+      chatId: 1, compactedTo: 1, summary: "earlier",
+      ...buildState([record(0, agent, {type: "changes", change: codeChange("a"), pins: [pin7]})],
+                    1),
+    });
+    expect(rootedOnly.proposedChange).toBeUndefined();
+
+    // A reverted re-root declares nothing, so the changes before it survive.
+    let reverted = buildState([
+      record(0, agent, {type: "changes", change: codeChange("a", "first.js"), pins: [pin7]}),
+      record(1, user, {type: "changes", pins: [reroot], mainlineMerge: {conflictPaths: []}}),
+      record(2, user, {type: "revert", revertFrom: 1}),
+    ], 3);
+    expect(reverted.pins).toEqual([pin7]);
+    expect(filesIn(reverted.proposedChange)).toEqual(["first.js"]);
   });
 
   it("treats a conversion boundary as an epoch boundary for pins and the epoch", () => {

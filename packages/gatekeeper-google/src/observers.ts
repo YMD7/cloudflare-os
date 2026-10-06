@@ -18,6 +18,17 @@
  */
 
 const OBSERVER_PREFIX = "observer:";
+const OBSERVER_ATTEMPT_PREFIX = "observer-attempt:";
+const OBSERVER_NONCE_PREFIX = "observer-nonce:";
+/** Latched once an owner-only observation has been made: admission is closed for good. */
+const OBSERVER_WITHHELD_KEY = "observer-withheld";
+/** One marker per owner-only read still in flight. A marker stranded by a crash fails closed. */
+const OBSERVER_WITHHOLD_PREFIX = "observer-withhold:";
+
+/** Refusal when the binding has read something no observer can ever be verified against. */
+export const OBSERVER_WITHHELD_MESSAGE =
+  "This binding has made an observation no collaborator can be verified against, so it can no " +
+  "longer be observed.";
 
 /** Persisted state of one tracked set. `true` is the pre-"pending" legacy encoding of observed. */
 export type ObservedSetState = true | "pending" | "observed";
@@ -33,6 +44,8 @@ export type ObserverCheck<T> = {
   pendingSets: T[];
   /** Promotes the pending sets to observed. Call only after the read is authorized. */
   commit(): void;
+  /** Releases state this call staged. Call when the read was refused. */
+  discard?(): void;
 };
 
 /** The storage surface the tracker needs, satisfied by a Durable Object's `ctx.storage.kv`. */
@@ -43,14 +56,27 @@ export interface ObserverKv {
   list<T>(options: { prefix: string }): Iterable<[string, T]>;
 }
 
+/** Baseline and per-set verdicts returned by one bulk observer verification. */
+export type ObserverBatchResult = { baselineAllowed: boolean; allowed: boolean[] };
+
+function assertBatchResultLength(result: ObserverBatchResult, expectedLength: number): void {
+  if (result.allowed.length !== expectedLength) {
+    throw new Error("Bulk observer verification must return one result per set");
+  }
+}
+
 export type ObserverTrackerOptions<T, V> = {
   /** Key prefix for tracked sets. Must not be `observer:`, which holds the observers themselves. */
   setPrefix: string;
   /** Reversible encoding of one set's identity. Must round-trip through {@link decode}. */
   encode(value: T): string;
   decode(encoded: string): T;
-  /** Whether the observer's own credentials reach this set. */
-  hasAccess(verifier: V, value: T): Promise<boolean>;
+  /** Whether the observer's own credentials reach one set. Mutually exclusive with `verifyBatch`. */
+  hasAccess?(verifier: V, value: T): Promise<boolean>;
+  /** Verifies the observer's baseline grant and every supplied set in one RPC. */
+  verifyBatch?(verifier: V, values: readonly T[]): Promise<ObserverBatchResult>;
+  /** The error thrown when bulk verification finds that the baseline grant is absent. */
+  baselineDeniedMessage?: string;
   /** The error thrown when a joining observer cannot reach `value`. */
   deniedMessage(value: T): string;
   /**
@@ -62,11 +88,10 @@ export type ObserverTrackerOptions<T, V> = {
    * Distinct sets this binding may track before {@link ObserverTracker.prepareObservation} starts
    * refusing reads.
    *
-   * Verifying an observer costs one round trip per tracked set, and the overseer re-runs it on
-   * every open, so an unbounded set makes opening the gadget unboundedly expensive. The cap is
-   * enforced when a set is *recorded* rather than when an observer joins, because the alternative
-   * is worse: a binding that has already read past the cap can never be verified against, which
-   * locks out the collaborators already using it as well as new ones, with no way back.
+   * Verification cost grows with the number of tracked sets. The cap is enforced when a set is
+   * recorded rather than when an observer joins, because the alternative is worse: a binding that
+   * has already read past the cap can never be verified against, which locks out the collaborators
+   * already using it as well as new ones, with no way back.
    */
   maxTrackedSets?: number;
   /** Concurrent verifier round trips. Bounded to stay inside the Workers subrequest limits. */
@@ -104,8 +129,24 @@ export class ObserverTracker<T, V> {
   #options: ObserverTrackerOptions<T, V>;
 
   constructor(kv: ObserverKv, options: ObserverTrackerOptions<T, V>) {
-    if (options.setPrefix === OBSERVER_PREFIX) {
-      throw new Error(`setPrefix must not collide with the observer prefix ${OBSERVER_PREFIX}`);
+    let reserved = [
+      OBSERVER_PREFIX, OBSERVER_ATTEMPT_PREFIX, OBSERVER_NONCE_PREFIX, OBSERVER_WITHHOLD_PREFIX,
+      OBSERVER_WITHHELD_KEY,
+    ];
+    if (reserved.includes(options.setPrefix)) {
+      throw new Error(`setPrefix must not collide with a reserved prefix (${reserved.join(", ")})`);
+    }
+    if ((options.hasAccess === undefined) === (options.verifyBatch === undefined)) {
+      throw new Error("Configure exactly one observer access verifier");
+    }
+    if (options.verifyBatch && !options.baselineDeniedMessage) {
+      throw new Error("A bulk verifier requires baselineDeniedMessage");
+    }
+    // Staging first closes the admission race only while the observer is actually recorded. A bulk
+    // verifier with recordObservers: false would leave a concurrent disclosure unable to see the
+    // joining observer, which is the leak the staging exists to close.
+    if (options.verifyBatch && options.recordObservers === false) {
+      throw new Error("A bulk verifier must record observers");
     }
     this.#kv = kv;
     this.#options = options;
@@ -135,10 +176,13 @@ export class ObserverTracker<T, V> {
         .map(([key]) => this.#options.decode(key.slice(prefix.length)));
   }
 
-  /** The observers admitted so far, paired with the verifier each was admitted with. */
+  /** Canonical and currently-staged observers, paired with their verifiers. */
   *observers(): IterableIterator<[string, V]> {
     for (let [key, verifier] of this.#kv.list<V>({ prefix: OBSERVER_PREFIX })) {
       yield [key.slice(OBSERVER_PREFIX.length), verifier];
+    }
+    for (let [key, verifier] of this.#kv.list<V>({ prefix: OBSERVER_ATTEMPT_PREFIX })) {
+      yield [key.slice(OBSERVER_ATTEMPT_PREFIX.length), verifier];
     }
   }
 
@@ -173,17 +217,28 @@ export class ObserverTracker<T, V> {
     }
     for (let value of untracked) this.#kv.put(this.#setKey(value), "pending");
 
-    // One flat queue over (observer, set) pairs: nesting two Promise.alls would multiply out to an
-    // unbounded number of concurrent round trips.
     let observers = [...this.observers()];
-    let pairs = observers.flatMap(
-      ([id, verifier]) => pendingSets.map(value => ({ id, verifier, value })));
-    let access = await mapWithConcurrency(
-      pairs, this.#concurrency, pair => this.#options.hasAccess(pair.verifier, pair.value));
-
     let denied = new Set<string>();
-    for (let [index, pair] of pairs.entries()) {
-      if (!access[index]) denied.add(pair.id);
+    if (this.#options.verifyBatch) {
+      let verifyBatch = this.#options.verifyBatch;
+      let results = await mapWithConcurrency(
+        observers, this.#concurrency, ([, verifier]) => verifyBatch(verifier, pendingSets));
+      for (let [index, [id]] of observers.entries()) {
+        let result = results[index];
+        assertBatchResultLength(result, pendingSets.length);
+        if (!result.baselineAllowed || result.allowed.includes(false)) denied.add(id);
+      }
+    } else {
+      let hasAccess = this.#options.hasAccess!;
+      // One flat queue over (observer, set) pairs: nesting two Promise.alls would multiply out to an
+      // unbounded number of concurrent round trips.
+      let pairs = observers.flatMap(
+        ([id, verifier]) => pendingSets.map(value => ({ id, verifier, value })));
+      let access = await mapWithConcurrency(
+        pairs, this.#concurrency, pair => hasAccess(pair.verifier, pair.value));
+      for (let [index, pair] of pairs.entries()) {
+        if (!access[index]) denied.add(pair.id);
+      }
     }
 
     return {
@@ -196,35 +251,138 @@ export class ObserverTracker<T, V> {
   }
 
   /**
-   * Admits `id` as an observer, or throws naming the first set they cannot reach.
+   * Fences an owner-only observation: nobody currently admitted may see it, and nobody new may be
+   * admitted after it.
    *
-   * Re-lists after each round of checks, so a set observed while this was awaiting is covered too.
-   * The tracked set is bounded by {@link ObserverTrackerOptions.maxTrackedSets} at record time, so
-   * this needs no bound of its own.
+   * Such a read registers no tracked set, so {@link addObserver} would have nothing to verify a
+   * later candidate against — the backward check would pass vacuously over data the candidate was
+   * never entitled to. The durable marker goes down before the caller asks for approval, so an
+   * activation that dies mid-read leaves admission closed rather than open; `commit` latches and
+   * then clears it, and `discard` clears it when the read was refused. Once the latch is permanent
+   * there is nothing left to protect, so no marker goes down at all.
+   */
+  prepareWithheld(): ObserverCheck<T> {
+    // Enumerated before the marker goes down: a throw here must strand nothing.
+    let excludeObservers = [...this.observers()].map(([id]) => id);
+    let exclusions = excludeObservers.length > 0 ? { excludeObservers } : {};
+    if (this.#kv.get<boolean>(OBSERVER_WITHHELD_KEY)) {
+      return { ...exclusions, pendingSets: [], commit() {} };
+    }
+    let markerKey = `${OBSERVER_WITHHOLD_PREFIX}${crypto.randomUUID()}`;
+    this.#kv.put(markerKey, true);
+    return {
+      ...exclusions,
+      pendingSets: [],
+      // Latch before the marker goes, so no state has neither fence standing.
+      commit: () => {
+        this.#kv.put(OBSERVER_WITHHELD_KEY, true);
+        this.#kv.delete(markerKey);
+      },
+      discard: () => this.#kv.delete(markerKey),
+    };
+  }
+
+  /** Whether an owner-only read has latched, or is still unsettled. */
+  #observationWithheld(): boolean {
+    if (this.#kv.get<boolean>(OBSERVER_WITHHELD_KEY)) return true;
+    for (let _ of this.#kv.list({ prefix: OBSERVER_WITHHOLD_PREFIX })) return true;
+    return false;
+  }
+
+  /**
+   * Admits `id` as an observer, or throws naming the first set they cannot reach. Bulk verification
+   * stages the candidate, then re-lists until every set has been checked before promotion.
    */
   async addObserver(id: string, verifier: V): Promise<void> {
+    // A withheld read tracks no set, so nothing here can establish this candidate was entitled to
+    // it. One still in flight counts: this candidate is absent from the exclusion list it sent.
+    if (this.#observationWithheld()) throw new Error(OBSERVER_WITHHELD_MESSAGE);
+    let verifyBatch = this.#options.verifyBatch;
+    if (verifyBatch !== undefined) return this.#addBulkObserver(id, verifier, verifyBatch);
+
+    let hasAccess = this.#options.hasAccess;
+    if (hasAccess === undefined) throw new Error("Configure exactly one observer access verifier");
+    return this.#addPerSetObserver(id, verifier, hasAccess);
+  }
+
+  #assertCurrentAdmission(nonceKey: string, nonce: string): void {
+    if (this.#kv.get<string>(nonceKey) !== nonce) {
+      throw new Error("Observer admission was superseded by a newer attempt");
+    }
+  }
+
+  async #addBulkObserver(
+    id: string,
+    verifier: V,
+    verifyBatch: (verifier: V, values: readonly T[]) => Promise<ObserverBatchResult>,
+  ): Promise<void> {
+    let observerKey = `${OBSERVER_PREFIX}${id}`;
+    let attemptKey = `${OBSERVER_ATTEMPT_PREFIX}${id}`;
+    let nonceKey = `${OBSERVER_NONCE_PREFIX}${id}`;
+    let nonce = crypto.randomUUID();
+    let checked = new Set<string>();
+    let needsBaselineCheck = true;
+    this.#kv.put(attemptKey, verifier);
+    this.#kv.put(nonceKey, nonce);
+
+    try {
+      for (;;) {
+        let pending = this.listTracked().filter(
+          value => !checked.has(this.#options.encode(value)));
+        if (!needsBaselineCheck && pending.length === 0) {
+          this.#assertCurrentAdmission(nonceKey, nonce);
+          if (this.#observationWithheld()) throw new Error(OBSERVER_WITHHELD_MESSAGE);
+          this.#kv.put(observerKey, verifier);
+          this.#kv.delete(attemptKey);
+          this.#kv.delete(nonceKey);
+          return;
+        }
+        needsBaselineCheck = false;
+
+        let result = await verifyBatch(verifier, pending);
+        this.#assertCurrentAdmission(nonceKey, nonce);
+        assertBatchResultLength(result, pending.length);
+        if (!result.baselineAllowed) throw new Error(this.#options.baselineDeniedMessage);
+        let deniedIndex = result.allowed.indexOf(false);
+        if (deniedIndex >= 0) throw new Error(this.#options.deniedMessage(pending[deniedIndex]));
+        for (let value of pending) checked.add(this.#options.encode(value));
+      }
+    } catch (error) {
+      if (this.#kv.get<string>(nonceKey) === nonce) {
+        this.#kv.delete(attemptKey);
+        this.#kv.delete(nonceKey);
+      }
+      throw error;
+    }
+  }
+
+  async #addPerSetObserver(
+    id: string,
+    verifier: V,
+    hasAccess: (verifier: V, value: T) => Promise<boolean>,
+  ): Promise<void> {
+    let recordObservers = this.#options.recordObservers ?? true;
+    let observerKey = `${OBSERVER_PREFIX}${id}`;
     let checked = new Set<string>();
     for (;;) {
       let tracked = this.listTracked();
-
       let pending = tracked.filter(value => !checked.has(this.#options.encode(value)));
       if (pending.length === 0) {
-        if (this.#options.recordObservers ?? true) {
-          this.#kv.put(`${OBSERVER_PREFIX}${id}`, verifier);
-        }
+        if (this.#observationWithheld()) throw new Error(OBSERVER_WITHHELD_MESSAGE);
+        if (recordObservers) this.#kv.put(observerKey, verifier);
         return;
       }
-
       let access = await mapWithConcurrency(
-        pending, this.#concurrency, value => this.#options.hasAccess(verifier, value));
+        pending, this.#concurrency, value => hasAccess(verifier, value));
       let deniedIndex = access.indexOf(false);
       if (deniedIndex >= 0) throw new Error(this.#options.deniedMessage(pending[deniedIndex]));
-
       for (let value of pending) checked.add(this.#options.encode(value));
     }
   }
 
   removeObserver(id: string): void {
     this.#kv.delete(`${OBSERVER_PREFIX}${id}`);
+    this.#kv.delete(`${OBSERVER_ATTEMPT_PREFIX}${id}`);
+    this.#kv.delete(`${OBSERVER_NONCE_PREFIX}${id}`);
   }
 }

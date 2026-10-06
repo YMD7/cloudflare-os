@@ -4,6 +4,7 @@ import {
   Buildings,
   Clock,
   GitBranch,
+  GithubLogo,
   Folder,
   FileText,
   Plus,
@@ -24,6 +25,7 @@ import {
   FilePlus,
   FolderPlus,
   User,
+  WarningCircle,
   X,
 } from "@phosphor-icons/react";
 import {
@@ -44,6 +46,7 @@ import type {
   ContextGitTokenCreateResult,
   ContextGitTokenInfo,
   EnabledCollectionInfo,
+  GitHubSkillImportPreview,
 } from "../src/context-types";
 import {
   DEFAULT_GIT_BRANCH,
@@ -112,6 +115,12 @@ function stripFrontmatter(source: string): string {
 
 function pluralize(count: number, noun: string): string {
   return `${count} ${noun}${count !== 1 ? "s" : ""}`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 // Bounded-concurrency helper for bulk RPC operations.
@@ -972,7 +981,7 @@ export default function ContextLibraryPage() {
             c.title.toLowerCase().includes(searchLower) ||
             c.description.toLowerCase().includes(searchLower),
         )
-        .sort((a, b) => {
+        .toSorted((a, b) => {
           if (a.source !== b.source) return a.source === "public" ? -1 : 1;
           return a.title.localeCompare(b.title);
         }),
@@ -1761,6 +1770,306 @@ function GitTokenManagementModal({
   );
 }
 
+function GitHubSkillImportModal({
+  open,
+  collectionId,
+  onClose,
+  onImported,
+}: {
+  open: boolean;
+  collectionId: string;
+  onClose: () => void;
+  onImported: () => Promise<void>;
+}) {
+  const context = useContextApi();
+  const toasts = useKumoToastManager();
+  const { presenting, onOpenChangeComplete } = usePresentWhileOpen(open);
+  const [sourceUrl, setSourceUrl] = useState("");
+  const [preview, setPreview] = useState<GitHubSkillImportPreview | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [confirmed, setConfirmed] = useState(false);
+  const [inspecting, setInspecting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setSourceUrl("");
+    setPreview(null);
+    setSelected(new Set());
+    setConfirmed(false);
+    setInspecting(false);
+    setImporting(false);
+    setError(null);
+  }, [open]);
+
+  const busy = inspecting || importing;
+
+  const handleInspect = async () => {
+    if (busy || sourceUrl.trim() === "") return;
+    setInspecting(true);
+    setError(null);
+    setPreview(null);
+    setSelected(new Set());
+    setConfirmed(false);
+    try {
+      let result: GitHubSkillImportPreview = await context.previewGitHubSkillImport(sourceUrl);
+      setPreview(result);
+      setSelected(new Set(result.skills.map(skill => skill.manifestPath)));
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setInspecting(false);
+    }
+  };
+
+  const handleImport = async () => {
+    if (!preview || selected.size === 0 || !confirmed) return;
+    setImporting(true);
+    setError(null);
+    try {
+      let result = await context.importGitHubSkills(collectionId, {
+        sourceUrl: preview.sourceUrl,
+        expectedRevision: preview.revision,
+        manifestPaths: preview.skills
+          .filter(skill => selected.has(skill.manifestPath))
+          .map(skill => skill.manifestPath),
+      });
+      await onImported();
+      toasts.add({
+        title: `Imported ${pluralize(result.importedSkills.length, "skill")}`,
+        variant: "success",
+      });
+      onClose();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const updateSourceUrl = (value: string) => {
+    setSourceUrl(value);
+    setPreview(null);
+    setSelected(new Set());
+    setConfirmed(false);
+    setError(null);
+  };
+
+  const toggleSkill = (manifestPath: string) => {
+    setSelected(current => {
+      let next = new Set(current);
+      if (next.has(manifestPath)) next.delete(manifestPath);
+      else next.add(manifestPath);
+      return next;
+    });
+  };
+
+  const copyUrl = (value: string, label: string) => {
+    void navigator.clipboard.writeText(value)
+      .then(() => toasts.add({ title: `${label} copied`, variant: "success" }))
+      .catch(() => toasts.add({ title: `Failed to copy ${label.toLowerCase()}`, variant: "error" }));
+  };
+
+  return (
+    <Dialog.Root
+      open={open && presenting}
+      onOpenChange={(next: boolean) => {
+        if (!busy && !next) onClose();
+      }}
+      onOpenChangeComplete={onOpenChangeComplete}
+    >
+      <Dialog
+        className="z-[1000]! w-[min(620px,calc(100vw-32px))]! max-h-[min(760px,calc(100vh-32px))]! overflow-hidden bg-kumo-base p-0 top-[5%]! translate-y-0!"
+        size="sm"
+      >
+        <ModalHeader
+          title="Import skills from GitHub"
+          description="Inspect a public repository, directory, or SKILL.md URL before importing."
+        />
+
+        <div className="max-h-[calc(100vh-190px)] overflow-y-auto px-4 py-5 sm:px-6">
+          <div role="group" aria-labelledby="github-skill-source-label" className="space-y-3">
+            <div>
+              <label
+                id="github-skill-source-label"
+                htmlFor="github-skill-source"
+                className="mb-1.5 block text-[12px] leading-4 font-medium tracking-[-0.2px] text-kumo-subtle"
+              >
+                GitHub URL
+              </label>
+              <WorkshopInput
+                id="github-skill-source"
+                name="sourceUrl"
+                type="url"
+                required
+                value={sourceUrl}
+                onChange={(event: React.ChangeEvent<HTMLInputElement>) => updateSourceUrl(event.target.value)}
+                onKeyDown={(event: React.KeyboardEvent<HTMLInputElement>) => {
+                  if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+                  event.preventDefault();
+                  void handleInspect();
+                }}
+                aria-describedby="github-skill-help github-skill-error"
+                placeholder="https://github.com/owner/repository/tree/main/path"
+                className="w-full text-[16px] sm:text-[13px]"
+                disabled={busy}
+              />
+              <p id="github-skill-help" className="mt-1.5 text-[11px] leading-4 text-kumo-inactive">
+                Public GitHub repositories only. Private repositories and automatic updates are not supported yet.
+              </p>
+            </div>
+            <div className="flex justify-end">
+              <WorkshopButton
+                type="button"
+                tone="secondary"
+                loading={inspecting}
+                disabled={busy || sourceUrl.trim() === ""}
+                onClick={() => void handleInspect()}
+              >
+                Inspect source
+              </WorkshopButton>
+            </div>
+          </div>
+
+          {error && (
+            <div
+              id="github-skill-error"
+              role="alert"
+              aria-live="assertive"
+              className="mt-4 rounded-lg border border-kumo-danger/30 bg-kumo-danger-tint px-3 py-2 text-[12px] leading-5 text-kumo-danger"
+            >
+              {error}
+            </div>
+          )}
+
+          {preview && (
+            <div className="mt-5 space-y-4">
+              <div className="rounded-lg border border-kumo-line bg-kumo-recessed px-3 py-3 text-[12px] leading-5 text-kumo-subtle">
+                <div className="font-medium text-kumo-default">{preview.repositoryUrl.replace("https://github.com/", "")}</div>
+                <div className="mt-0.5 font-mono text-[11px]">
+                  {preview.ref} · {preview.revision.slice(0, 12)}
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <WorkshopButton
+                    type="button"
+                    tone="secondary"
+                    className="h-7!"
+                    onClick={() => copyUrl(preview.sourceUrl, "Source URL")}
+                  >
+                    Copy source URL
+                  </WorkshopButton>
+                  {preview.licenseUrl && (
+                    <WorkshopButton
+                      type="button"
+                      tone="secondary"
+                      className="h-7!"
+                      onClick={() => copyUrl(preview.licenseUrl!, "License URL")}
+                    >
+                      Copy license URL
+                    </WorkshopButton>
+                  )}
+                </div>
+              </div>
+
+              {!preview.licenseUrl && (
+                <div className="flex gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[12px] leading-5 text-kumo-subtle">
+                  <WarningCircle size={17} className="mt-0.5 shrink-0 text-amber-600" />
+                  <span>No root license file was detected. Verify the repository's terms before importing.</span>
+                </div>
+              )}
+
+              {preview.unsupportedPluginComponents.length > 0 && (
+                <div className="flex gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[12px] leading-5 text-kumo-subtle">
+                  <WarningCircle size={17} className="mt-0.5 shrink-0 text-amber-600" />
+                  <div>
+                    <div className="font-medium text-kumo-default">Plugin-only components will not be imported</div>
+                    <div>{preview.unsupportedPluginComponents.join(", ")}</div>
+                  </div>
+                </div>
+              )}
+
+              <fieldset>
+                <legend className="text-[12px] font-medium text-kumo-default">
+                  Skills found ({preview.skills.length})
+                </legend>
+                <div className="mt-2 divide-y divide-kumo-line rounded-lg border border-kumo-line">
+                  {preview.skills.length === 0 ? (
+                    <p className="px-3 py-3 text-[12px] text-kumo-subtle">No valid skills were found.</p>
+                  ) : preview.skills.map(skill => (
+                    <label
+                      key={skill.manifestPath}
+                      className="flex cursor-pointer items-start gap-3 px-3 py-3 hover:bg-kumo-tint"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selected.has(skill.manifestPath)}
+                        onChange={() => toggleSkill(skill.manifestPath)}
+                        disabled={busy}
+                        className="mt-1 h-4 w-4 shrink-0 accent-current"
+                      />
+                      <span className="min-w-0">
+                        <span className="block text-[13px] font-medium text-kumo-default">/{skill.name}</span>
+                        <span className="mt-0.5 block text-[12px] leading-4 text-kumo-subtle">
+                          {skill.description}
+                        </span>
+                        <span className="mt-1 block font-mono text-[10px] leading-4 text-kumo-inactive">
+                          {skill.manifestPath} · {pluralize(skill.fileCount, "file")} · {formatBytes(skill.totalBytes)}
+                        </span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+
+              {preview.invalidManifests.length > 0 && (
+                <div className="rounded-lg border border-kumo-line px-3 py-2 text-[11px] leading-4 text-kumo-subtle">
+                  <div className="font-medium text-kumo-default">Invalid SKILL.md files</div>
+                  {preview.invalidManifests.map(manifest => (
+                    <div key={manifest.path} className="mt-1">
+                      <span className="font-mono">{manifest.path}</span>: {manifest.error}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {preview.skills.length > 0 && (
+                <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-kumo-line px-3 py-3 text-[12px] leading-5 text-kumo-subtle">
+                  <input
+                    type="checkbox"
+                    checked={confirmed}
+                    onChange={event => setConfirmed(event.target.checked)}
+                    disabled={busy}
+                    className="mt-1 h-4 w-4 shrink-0 accent-current"
+                  />
+                  <span>
+                    I reviewed the source and license and trust these instructions. Imported skills can guide agents that use my connected tools.
+                  </span>
+                </label>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t border-kumo-line px-4 py-3 sm:px-6">
+          <WorkshopButton type="button" tone="secondary" className="h-9!" disabled={busy} onClick={onClose}>
+            Cancel
+          </WorkshopButton>
+          <WorkshopButton
+            type="button"
+            tone="primary"
+            loading={importing}
+            disabled={busy || !preview || selected.size === 0 || !confirmed}
+            onClick={handleImport}
+          >
+            Import selected
+          </WorkshopButton>
+        </div>
+      </Dialog>
+    </Dialog.Root>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // File tree model
 // ---------------------------------------------------------------------------
@@ -2193,6 +2502,7 @@ function CollectionEditor({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsMode, setSettingsMode] = useState<"edit" | "delete">("edit");
   const [gitTokensOpen, setGitTokensOpen] = useState(false);
+  const [githubImportOpen, setGitHubImportOpen] = useState(false);
   const openSettings = (m: "edit" | "delete") => {
     setSettingsMode(m);
     setSettingsOpen(true);
@@ -2582,6 +2892,15 @@ function CollectionEditor({
         />
       )}
 
+      {metadata?.content.source === "web" && (
+        <GitHubSkillImportModal
+          open={githubImportOpen}
+          collectionId={collectionId}
+          onClose={() => setGitHubImportOpen(false)}
+          onImported={loadDocs}
+        />
+      )}
+
       {/* In-app confirmation for tree ⋮ deletes (files and folders). */}
       <Dialog.Root
         open={!!pendingDelete && deletePresentation.presenting}
@@ -2729,6 +3048,13 @@ function CollectionEditor({
                 className={MENU_ITEM}
               >
                 Upload folder
+              </DropdownMenu.Item>
+              <DropdownMenu.Item
+                icon={<GithubLogo size={13} className="mr-2" />}
+                onClick={() => setGitHubImportOpen(true)}
+                className={MENU_ITEM}
+              >
+                Import from GitHub
               </DropdownMenu.Item>
             </KebabMenu>
             <input
