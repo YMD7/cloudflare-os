@@ -171,6 +171,8 @@ async function spawnWrapper(
   };
 
   try {
+    // 子孫が先にstdoutへ書く場合もあるため、両方の行を待つ。
+    assert.ok(await waitForOutput(/^child \d+$/m), "the wrapper never reported a child pid");
     assert.ok(await waitForOutput(/^grandchild \d+$/m), "the wrapper never reported both pids");
     childPid = Number(/^child (\d+)$/m.exec(text)?.[1] ?? 0);
     grandchildPid = Number(/^grandchild (\d+)$/m.exec(text)?.[1] ?? 0);
