@@ -414,10 +414,10 @@ describe("AdminSettings.getSettings gateway models", () => {
       return { reasoningLevels, builtInCompactionInputBudget, maxCompactionInputBudget,
           runtimeKnown, settings };
     };
-    // The one built-in budget below what the window leaves: 1,050,000 less a 128,000 response.
+    // 応答用の16,384トークンを除いた上限と、272,000の既定予算を区別する。
     expect(view("gpt-6-sol")).toStrictEqual({
       reasoningLevels: ["off", "low", "medium", "high", "xhigh", "max"],
-      builtInCompactionInputBudget: 272000, maxCompactionInputBudget: 922000,
+      builtInCompactionInputBudget: 272000, maxCompactionInputBudget: 1033616,
       runtimeKnown: true, settings: { reasoning: "xhigh", compactionInputBudget: 500000 },
     });
     // The deployment's default is no setting of a model's own.

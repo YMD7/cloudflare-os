@@ -185,7 +185,7 @@ describe("GatewayModels", () => {
       contextWindow: 1000000, mode: "enabled", defaultMode: "enabled", added: false,
     });
     expect(models.get("gpt-6-sol")).toMatchObject(
-        { outputLimit: 128000, mode: "hidden", defaultMode: "hidden", added: false });
+        { outputLimit: 16384, mode: "hidden", defaultMode: "hidden", added: false });
     expect(models.get("gemini-3.6-flash")).toBeUndefined();
 
     expect(ids(models.all)).toEqual([

@@ -518,16 +518,16 @@ describe("getModel direct routing (no gateway)", () => {
   });
 
   it.each([
-    ["anthropic", "claude-opus-5-5", "Claude Opus 5.5", 1_000_000],
-    ["anthropic", "claude-sonnet-5-5", "Claude Sonnet 5.5", 1_000_000],
-    ["anthropic", "claude-fable-5-1", "Claude Fable 5.1", 1_000_000],
-    ["openai", "gpt-6.1-sol", "GPT-6.1 Sol", 1_050_000],
-    ["openai", "gpt-6-astra", "GPT-6 Astra", 1_050_000],
-    ["openai", "gpt-6-sol", "GPT-6 Sol", 1_050_000],
-    ["openai", "gpt-6-luna", "GPT-6 Luna", 1_050_000],
+    ["anthropic", "claude-opus-5-5", "Claude Opus 5.5", 1_000_000, 128_000],
+    ["anthropic", "claude-sonnet-5-5", "Claude Sonnet 5.5", 1_000_000, 128_000],
+    ["anthropic", "claude-fable-5-1", "Claude Fable 5.1", 1_000_000, 128_000],
+    ["openai", "gpt-6.1-sol", "GPT-6.1 Sol", 1_050_000, 16_384],
+    ["openai", "gpt-6-astra", "GPT-6 Astra", 1_050_000, 32_768],
+    ["openai", "gpt-6-sol", "GPT-6 Sol", 1_050_000, 16_384],
+    ["openai", "gpt-6-luna", "GPT-6 Luna", 1_050_000, 32_768],
   ] as const)(
       "offers %s model %s with configured limits and catalog metadata",
-      (provider, model, name, contextWindow) => {
+      (provider, model, name, contextWindow, maxTokens) => {
     expect(SUGGESTED_MODELS[provider][model]).toMatchObject({name, contextWindow});
 
     const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
@@ -541,7 +541,7 @@ describe("getModel direct routing (no gateway)", () => {
       id: model,
       name,
       contextWindow,
-      maxTokens: 128_000,
+      maxTokens,
       cost: upstream.cost,
       compat: upstream.compat,
       thinkingLevelMap: upstream.thinkingLevelMap,
@@ -1107,6 +1107,8 @@ describe("gateway model reasoning levels", () => {
     ["openai", "gpt-5.6-terra", "medium"],
     ["google", "gemini-3.6-flash", null],
     ["cloudflare", "@cf/moonshotai/kimi-k2.7-code", null],
+    ["cloudflare", "@cf/qwen/qwen3.8-27b", null],
+    ["cloudflare", "moonshotai/kimi-k3", null],
     ["cloudflare", "@cf/zai-org/glm-5.2", null],
     ["cloudflare", "@cf/zai-org/glm-5.3-flash", null],
     ["cloudflare", "@cf/deepseek-ai/deepseek-v4-pro-0813", null],

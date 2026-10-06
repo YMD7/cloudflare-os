@@ -103,14 +103,14 @@ describe("compaction trigger", () => {
     })).toEqual({inputBudget: 1_000_000, maxOutputTokens: undefined});
   });
 
-  it("uses the suggested 272K compaction budget for GPT-5.6 and GPT-6", () => {
-    for (let model of ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra"]) {
+  it("keeps the 272K compaction budget with deployment output caps", () => {
+    for (let [model, maxOutputTokens] of [
+      ["gpt-5.6-sol", 16_384], ["gpt-5.6-luna", 32_768], ["gpt-5.6-terra", 32_768],
+      ["gpt-6.1-sol", 16_384], ["gpt-6-sol", 16_384],
+      ["gpt-6-luna", 32_768], ["gpt-6-astra", 32_768],
+    ] as const) {
       expect(getModelTokenLimits({provider: "openai", model, apiToken: ""}))
-          .toEqual({inputBudget: 272_000, maxOutputTokens: 128_000});
-    }
-    for (let model of ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-6-astra"]) {
-      expect(getModelTokenLimits({provider: "openai", model, apiToken: ""}))
-          .toEqual({inputBudget: 272_000, maxOutputTokens: 128_000});
+          .toEqual({inputBudget: 272_000, maxOutputTokens});
     }
   });
 
@@ -142,9 +142,9 @@ describe("compaction trigger", () => {
     let gpt = {provider: "openai" as const, model: "gpt-6-sol", apiToken: ""};
     // Below the suggested 272K, and above it.
     expect(getModelTokenLimits({...gpt, compactionInputBudget: 100_000}))
-        .toEqual({inputBudget: 100_000, maxOutputTokens: 128_000});
+        .toEqual({inputBudget: 100_000, maxOutputTokens: 16_384});
     expect(getModelTokenLimits({...gpt, compactionInputBudget: 500_000}))
-        .toEqual({inputBudget: 500_000, maxOutputTokens: 128_000});
+        .toEqual({inputBudget: 500_000, maxOutputTokens: 16_384});
 
     // A model that declares no budget of its own sizes against its window.
     expect(getModelTokenLimits({
@@ -157,14 +157,14 @@ describe("compaction trigger", () => {
   });
 
   it("caps the config's compaction budget at what the window leaves for a prompt", () => {
-    // 1,050,000 less the 128,000 reserved for the response.
+    // 応答用の16,384トークンを1,050,000トークンのウィンドウから確保する。
     let gpt = {provider: "openai" as const, model: "gpt-6-sol", apiToken: ""};
-    expect(getModelTokenLimits({...gpt, compactionInputBudget: 922_000}).inputBudget)
-        .toBe(922_000);
-    expect(getModelTokenLimits({...gpt, compactionInputBudget: 922_001}).inputBudget)
-        .toBe(922_000);
+    expect(getModelTokenLimits({...gpt, compactionInputBudget: 1_033_616}).inputBudget)
+        .toBe(1_033_616);
+    expect(getModelTokenLimits({...gpt, compactionInputBudget: 1_033_617}).inputBudget)
+        .toBe(1_033_616);
     expect(getModelTokenLimits({...gpt, compactionInputBudget: Infinity}).inputBudget)
-        .toBe(922_000);
+        .toBe(1_033_616);
 
     expect(getModelTokenLimits({
       provider: "anthropic", model: "claude-opus-5-5", apiToken: "",

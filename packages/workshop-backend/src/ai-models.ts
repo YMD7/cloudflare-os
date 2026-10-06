@@ -266,8 +266,7 @@ function cloudflareChatModel(config: AiModelConfig, baseUrl: string): Model<Api>
     id: config.model,
     name: catalog?.name ?? config.model,
     api: "openai-completions",
-    provider: isCatalogModel ? (catalog?.provider ?? "cloudflare-ai-gateway")
-        : "cloudflare-workers-ai",
+    provider: isCatalogModel ? "moonshotai" : "cloudflare-workers-ai",
     baseUrl,
     reasoning: catalog?.reasoning ?? false,
     input: catalog?.input ?? ["text"],

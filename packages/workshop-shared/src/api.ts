@@ -23,8 +23,8 @@
 // RPC to the Workshop. Among other things, through this interface, the Workshop provides the
 // Gadget a stub pointing to the Gadget's server-side Durable Object interface.
 
-import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
-import { AccountDescription, ActionKind, ActionDescription, AvatarImage, GatekeeperUiFrame, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
+import { type RpcCompatible, RpcStub, RpcTarget } from "capnweb";
+import type { AccountDescription, ActionKind, ActionDescription, AvatarImage, GatekeeperUiFrame, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
 import type { CodeChange } from "./code-change.js";
 import type { UiFeatureFlags } from "./feature-flags.js";
 
@@ -1780,6 +1780,10 @@ export type RedactedAiModelConfig = Omit<AiModelConfig,
  */
 export const WORKERS_AI_OUTPUT_LIMIT = 32768;
 
+// 既存環境の出力予約を維持し、AI Gatewayのトークンレート制限を回避する。
+const OPENAI_OUTPUT_LIMIT = 32768;
+const OPENAI_SOL_OUTPUT_LIMIT = 16384;
+
 /** One entry of SUGGESTED_MODELS. */
 type SuggestedModel = {
   name: string;
@@ -1809,9 +1813,6 @@ type SuggestedModel = {
 // The literal is kept apart from the export so SuggestedModelId can derive the model ids from it.
 const SUGGESTED_MODEL_CATALOG = {
   "cloudflare": {
-    "moonshotai/kimi-k3": {
-      name: "Kimi K3 (Cloudflare AI catalog)", contextWindow: 1048576, outputLimit: 131072,
-    },
     "@cf/moonshotai/kimi-k2.7-code": {
       name: "Kimi K2.7 Code (Workers AI)", contextWindow: 262144,
       outputLimit: WORKERS_AI_OUTPUT_LIMIT,
@@ -1827,6 +1828,13 @@ const SUGGESTED_MODEL_CATALOG = {
       name: "DeepSeek V4 Pro 0813 (Workers AI)", contextWindow: 1048576,
       outputLimit: WORKERS_AI_OUTPUT_LIMIT,
     },
+    "@cf/qwen/qwen3.8-27b": {
+      name: "Qwen 3.8 27B (Workers AI)", contextWindow: 262144,
+      outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    "moonshotai/kimi-k3": {
+      name: "Kimi K3 (Cloudflare AI catalog)", contextWindow: 1048576, outputLimit: 131072,
+    },
   },
   "anthropic": {
     "claude-opus-5-5": {name: "Claude Opus 5.5", contextWindow: 1000000},
@@ -1840,34 +1848,34 @@ const SUGGESTED_MODEL_CATALOG = {
     // pi's GPT-6 catalog reports a 272K window, but these models support 1.05M. Use 272K as the
     // preferred compaction budget, not as the hard context limit.
     "gpt-6.1-sol": {
-      name: "GPT-6.1 Sol", contextWindow: 1050000, outputLimit: 128000,
+      name: "GPT-6.1 Sol", contextWindow: 1050000, outputLimit: OPENAI_SOL_OUTPUT_LIMIT,
       compactionInputBudget: 272000,
     },
     "gpt-6-sol": {
-      name: "GPT-6 Sol", contextWindow: 1050000, outputLimit: 128000,
+      name: "GPT-6 Sol", contextWindow: 1050000, outputLimit: OPENAI_SOL_OUTPUT_LIMIT,
       compactionInputBudget: 272000,
       hidden: true,
     },
     "gpt-6-luna": {
-      name: "GPT-6 Luna", contextWindow: 1050000, outputLimit: 128000,
+      name: "GPT-6 Luna", contextWindow: 1050000, outputLimit: OPENAI_OUTPUT_LIMIT,
       compactionInputBudget: 272000,
     },
     "gpt-6-astra": {
-      name: "GPT-6 Astra", contextWindow: 1050000, outputLimit: 128000,
+      name: "GPT-6 Astra", contextWindow: 1050000, outputLimit: OPENAI_OUTPUT_LIMIT,
       compactionInputBudget: 272000,
     },
     "gpt-5.6-sol": {
-      name: "GPT 5.6 Sol", contextWindow: 1050000, outputLimit: 128000,
+      name: "GPT 5.6 Sol", contextWindow: 1050000, outputLimit: OPENAI_SOL_OUTPUT_LIMIT,
       compactionInputBudget: 272000,
       hidden: true,
     },
     "gpt-5.6-luna": {
-      name: "GPT 5.6 Luna", contextWindow: 1050000, outputLimit: 128000,
+      name: "GPT 5.6 Luna", contextWindow: 1050000, outputLimit: OPENAI_OUTPUT_LIMIT,
       compactionInputBudget: 272000,
       hidden: true,
     },
     "gpt-5.6-terra": {
-      name: "GPT 5.6 Terra", contextWindow: 1050000, outputLimit: 128000,
+      name: "GPT 5.6 Terra", contextWindow: 1050000, outputLimit: OPENAI_OUTPUT_LIMIT,
       compactionInputBudget: 272000,
       hidden: true,
     },
