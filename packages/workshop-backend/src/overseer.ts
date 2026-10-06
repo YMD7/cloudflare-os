@@ -11296,9 +11296,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async newChat(initialMessage: string | SlashCommandRequest, chosenModelId: string | null,
                 capsules?: CapsuleSpecifier[], attachments?: ChatAttachmentHandle[],
-                formats?: MessageFormatRef[]): Promise<number> {
+                formats?: MessageFormatRef[], generateTitle = true): Promise<number> {
     let userMeta = await retryOnDoReset(
         () => this.#clientUser.getChatContext(chosenModelId), this.impl.logger);
+    if (!generateTitle) userMeta = { ...userMeta, quickModel: undefined };
     return this.impl.newChat(this.#clientUser, userMeta, initialMessage, capsules, attachments,
                              undefined, undefined, formats);
   }
@@ -11323,9 +11324,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     this.impl.storage.chatMeta.put(meta);
   }
 
-  async mergeChanges(chatId: number): Promise<MergeChangesResult> {
+  async mergeChanges(chatId: number, generateTitle = true): Promise<MergeChangesResult> {
     let userMeta = await retryOnDoReset(
         () => this.#clientUser.getChatContext(null), this.impl.logger);
+    if (!generateTitle) userMeta = { ...userMeta, quickModel: undefined };
     return await this.impl.withChatLock(chatId,
         () => this.impl.mergeChanges(chatId, userMeta, this.#clientUser.id.toString()));
   }

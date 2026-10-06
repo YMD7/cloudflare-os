@@ -1704,3 +1704,31 @@ describe("proposed-changes derivation", () => {
     expect(deliveredLists.at(-1)).toBeUndefined();
   }));
 });
+
+
+describe("同期用タイトル生成の抑止", () => {
+  for (let generateTitle of [true, false]) {
+    it(`newChatと初回mergeChanges: generateTitle=${generateTitle}`, () => withClient(async (impl, client) => {
+      let titles: string[] = [];
+      impl.wrapUserDo = (stub: any) => ({
+        id: stub.id,
+        getChatContext: async () => ({ ...USER_META, quickModel: {} }),
+        whoami: async () => USER,
+      });
+      impl.generateThreadTitle = () => { titles.push("chat"); };
+      impl.generateGadgetTitle = () => { titles.push("gadget"); };
+      let chat = await client.newChat("local source sync", null,
+          undefined, undefined, undefined, generateTitle);
+      let base = await commitFiles(impl, {});
+      addGadget(impl, 1, "APP", base);
+      await submit(impl, chat, {
+        generation: 0, revision: 0, clientId: "cli-title", seq: 1,
+        pins: [{ gadgetId: 1, baseCommit: base }],
+        change: editChange(1, {}, { "a.txt": "after" }),
+      });
+      expect(await client.mergeChanges(chat, generateTitle)).toEqual({ outcome: "merged" });
+      expect(titles).toEqual(generateTitle ? ["chat", "gadget"] : []);
+      expect(impl.storage.chatMeta.get(chat).activeAgent).toBeUndefined();
+    }));
+  }
+});

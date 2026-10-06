@@ -2720,10 +2720,12 @@ export interface Overseer extends RpcTarget {
    * `formats` records where the message names one of the deployment's standard output formats, so
    * the transcript can draw it as a chip. Display only -- what the agent reads is the noun, which
    * is already in the text.
+   *
+   * generateTitle=falseは同期ツール向けに補助AIのタイトル生成を抑止する。
    */
   newChat(initialMessage: string | SlashCommandRequest, modelId: string | null,
           capsules?: CapsuleSpecifier[], attachments?: ChatAttachmentHandle[],
-          formats?: MessageFormatRef[]): Promise<number>;
+          formats?: MessageFormatRef[], generateTitle?: boolean): Promise<number>;
 
   /**
    * Send a message to the chat from this client. Sending a message causes the LLM to start
@@ -2795,8 +2797,10 @@ export interface Overseer extends RpcTarget {
    * AiChatMessageBody.blueprintMerges) is accepted with the rest: the gadget's new head gains
    * the release as a parent, unless its history already holds it, and the gadget follows that
    * blueprint from then on.
+   *
+   * generateTitle=falseは初回コード確定時の補助AIを抑止する。
    */
-  mergeChanges(chatId: number): Promise<MergeChangesResult>;
+  mergeChanges(chatId: number, generateTitle?: boolean): Promise<MergeChangesResult>;
 
   /**
    * Merge mainline commits that landed after this chat's pins into the chat's uncommitted state.
